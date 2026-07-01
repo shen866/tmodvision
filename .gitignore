@@ -1,0 +1,11 @@
+node_modules
+server/node_modules
+web/node_modules
+server/dist
+web/dist
+data
+.env
+*.log
+tmodloader/tModLoader.zip
+.playwright-mcp/
+console-*.png
