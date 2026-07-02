@@ -34,6 +34,9 @@ docker compose up -d --build
 - 多服配置通过 `./data/servers.json` 管理；未配置时自动回退到单服模式（使用 `.env` 中的 `TMOD_CONTAINER_NAME` 与 `DATA_DIR`）。
 - 每个服务器拥有独立的 `dataDir`，但 `steamMods` 目录在所有服务器间共享，避免重复下载工坊模组。
 - 新建服务器时，后端会将 `/app/tmodloader-template`（Docker 镜像内）或项目根目录 `tmodloader/` 复制到新服的 compose 目录。
+- 备份文件命名规范：`<serverId>-<worldName>-<timestamp>.zip`，存放于各服 `tModLoader/backups/`。
+- 自动备份配置保存在 `./data/backup-config.json`，进程启动时恢复调度。
+- 资源管理中的缓存清理仅删除未被任何服务器 `enabled.json` 引用的 `steamMods` 工坊目录。
 
 ## 修改后注意
 

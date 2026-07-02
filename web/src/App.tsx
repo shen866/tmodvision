@@ -11,6 +11,8 @@ import WorldsPage from '@/pages/Worlds';
 import ConfigPage from '@/pages/Config';
 import ConsolePage from '@/pages/Console';
 import CreatePage from '@/pages/Create';
+import ResourcesPage from '@/pages/Resources';
+import BackupsPage from '@/pages/Backups';
 
 function ServerSidebar() {
   const location = useLocation();
@@ -25,6 +27,7 @@ function ServerSidebar() {
     { path: `/server/${serverId}/mods`, label: '模组' },
     { path: `/server/${serverId}/worlds`, label: '世界' },
     { path: `/server/${serverId}/config`, label: '配置' },
+    { path: `/server/${serverId}/backups`, label: '备份' },
   ];
 
   return (
@@ -101,6 +104,16 @@ function Layout({ children }: { children: React.ReactNode }) {
             }`}
           >
             仪表盘
+          </Link>
+          <Link
+            to="/resources"
+            className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+              location.pathname === '/resources'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            }`}
+          >
+            资源管理
           </Link>
           {!isHome && <ServerSidebar />}
         </aside>
@@ -192,6 +205,22 @@ function App() {
         element={
           <ProtectedRoute>
             <ConfigPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/server/:serverId/backups"
+        element={
+          <ProtectedRoute>
+            <BackupsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/resources"
+        element={
+          <ProtectedRoute>
+            <ResourcesPage />
           </ProtectedRoute>
         }
       />

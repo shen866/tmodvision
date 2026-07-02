@@ -6,12 +6,15 @@ import { PORT } from './config';
 import { ensureDirs } from './services/files';
 import { attachConsole } from './ws-console';
 import { listServers } from './servers';
+import { startAutoBackupScheduler } from './services/backups';
 
 import serverRoutes from './routes/server';
 import modsRoutes from './routes/mods';
 import worldsRoutes from './routes/worlds';
 import configRoutes from './routes/config';
 import createRoutes from './routes/create';
+import resourcesRoutes from './routes/resources';
+import backupsRoutes from './routes/backups';
 
 async function main() {
   await ensureDirs();
@@ -42,9 +45,13 @@ async function main() {
   serverRouter.use('/mods', modsRoutes);
   serverRouter.use('/worlds', worldsRoutes);
   serverRouter.use('/config', configRoutes);
+  serverRouter.use('/backups', backupsRoutes);
   serverRouter.use('/', serverRoutes);
 
   app.use('/api/server/:serverId', authMiddleware, serverRouter);
+
+  // Global resources
+  app.use('/api/resources', authMiddleware, resourcesRoutes);
 
   // Serve React build
   const webDist = path.join(__dirname, 'public');
@@ -64,6 +71,7 @@ async function main() {
   });
 
   attachConsole(server);
+  startAutoBackupScheduler();
 }
 
 main().catch((err) => {
