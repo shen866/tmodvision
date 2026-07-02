@@ -11,6 +11,7 @@ import serverRoutes from './routes/server';
 import modsRoutes from './routes/mods';
 import worldsRoutes from './routes/worlds';
 import configRoutes from './routes/config';
+import createRoutes from './routes/create';
 
 async function main() {
   await ensureDirs();
@@ -25,7 +26,8 @@ async function main() {
   // Auth verification
   app.post('/api/auth/verify', authMiddleware, (_req, res) => res.json({ valid: true }));
 
-  // Server list (needed by Dashboard)
+  // Server list and creation
+  app.use('/api/servers', authMiddleware, createRoutes);
   app.get('/api/servers', authMiddleware, async (_req, res, next) => {
     try {
       const servers = await listServers();

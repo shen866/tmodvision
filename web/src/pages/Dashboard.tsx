@@ -52,9 +52,14 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">仪表盘</h1>
-        <Button variant="outline" size="sm" onClick={refreshServers}>
-          刷新
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={refreshServers}>
+            刷新
+          </Button>
+          <Button size="sm" asChild>
+            <Link to="/create">新建服务器</Link>
+          </Button>
+        </div>
       </div>
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {servers.map((server) => {

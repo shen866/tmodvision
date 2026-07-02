@@ -16,7 +16,7 @@ export interface ServerConfig {
   port: number;
 }
 
-const SERVERS_JSON_PATH = path.join(DATA_DIR, 'servers.json');
+export const SERVERS_JSON_PATH = path.join(DATA_DIR, 'servers.json');
 
 let cachedServers: ServerConfig[] | null = null;
 

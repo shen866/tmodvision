@@ -10,6 +10,7 @@ import ModsPage from '@/pages/Mods';
 import WorldsPage from '@/pages/Worlds';
 import ConfigPage from '@/pages/Config';
 import ConsolePage from '@/pages/Console';
+import CreatePage from '@/pages/Create';
 
 function ServerSidebar() {
   const location = useLocation();
@@ -138,6 +139,14 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route
+        path="/create"
+        element={
+          <ProtectedRoute>
+            <CreatePage />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/"
         element={

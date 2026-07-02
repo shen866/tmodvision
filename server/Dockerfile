@@ -24,6 +24,7 @@ COPY server/package*.json ./
 RUN npm install --production
 COPY --from=server-builder /app/dist ./dist
 COPY --from=web-builder /web/dist ./dist/public
+COPY tmodloader/ /app/tmodloader-template/
 
 ENV NODE_ENV=production
 EXPOSE 3000
