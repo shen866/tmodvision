@@ -12,12 +12,19 @@ interface ServerStatus {
   maxplayers: number | null;
 }
 
+interface ServerPlayers {
+  count: number;
+  players: string[];
+}
+
 export default function Dashboard() {
   const { servers, refreshServers } = useServers();
   const [statuses, setStatuses] = useState<Record<string, ServerStatus>>({});
+  const [players, setPlayers] = useState<Record<string, ServerPlayers>>({});
 
   const fetchStatuses = async () => {
     const next: Record<string, ServerStatus> = {};
+    const playerNext: Record<string, ServerPlayers> = {};
     await Promise.all(
       servers.map(async (s) => {
         try {
@@ -26,9 +33,16 @@ export default function Dashboard() {
         } catch {
           next[s.id] = { state: 'unknown', port: s.port, maxplayers: null };
         }
+        try {
+          const p = await api.forServer(s.id).get('/players');
+          playerNext[s.id] = p;
+        } catch {
+          // leave undefined → rendered as '-' (unknown), not 0
+        }
       })
     );
     setStatuses(next);
+    setPlayers(playerNext);
   };
 
   useEffect(() => {
@@ -78,7 +92,7 @@ export default function Dashboard() {
                 </p>
                 <p className="text-sm">
                   <span className="text-muted-foreground">玩家:</span>{' '}
-                  {status?.maxplayers ? `- / ${status.maxplayers}` : '-'}
+                  {players[server.id]?.count ?? '-'}/{status?.maxplayers ?? '-'}
                 </p>
                 <Button size="sm" asChild className="w-full">
                   <Link to={`/server/${server.id}`}>进入管理</Link>

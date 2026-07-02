@@ -1,6 +1,7 @@
 import { Router, Request } from 'express';
 import { getStatus, startServer, stopServer, restartServer } from '../services/docker';
 import { readServerConfig } from '../services/files';
+import { getOnlinePlayers } from '../services/players';
 
 const router = Router({ mergeParams: true });
 
@@ -41,6 +42,15 @@ router.post('/restart', async (req: Request<{ serverId: string }>, res, next) =>
   try {
     await restartServer(req.params.serverId);
     res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/players', async (req: Request<{ serverId: string }>, res, next) => {
+  try {
+    const players = getOnlinePlayers(req.params.serverId);
+    res.json({ count: players.length, players });
   } catch (err) {
     next(err);
   }

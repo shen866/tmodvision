@@ -4,7 +4,7 @@ import { getServerById, getServerPaths } from '../servers';
 
 const docker = new Docker();
 
-async function getContainer(serverId: string) {
+export async function getContainer(serverId: string) {
   const server = await getServerById(serverId);
   const containers = await docker.listContainers({ all: true });
   const info = containers.find(
@@ -94,7 +94,7 @@ export async function streamLogs(
   };
 }
 
-function parseDockerLog(buffer: Buffer): string[] {
+export function parseDockerLog(buffer: Buffer): string[] {
   const lines: string[] = [];
   let offset = 0;
   while (offset < buffer.length) {

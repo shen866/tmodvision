@@ -7,6 +7,7 @@ import { ensureDirs } from './services/files';
 import { attachConsole } from './ws-console';
 import { listServers } from './servers';
 import { startAutoBackupScheduler } from './services/backups';
+import { startPlayerPoller } from './services/players';
 
 import serverRoutes from './routes/server';
 import modsRoutes from './routes/mods';
@@ -72,6 +73,7 @@ async function main() {
 
   attachConsole(server);
   startAutoBackupScheduler();
+  startPlayerPoller();
 }
 
 main().catch((err) => {
