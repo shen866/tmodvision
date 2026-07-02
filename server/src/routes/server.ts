@@ -1,38 +1,45 @@
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import { getStatus, startServer, stopServer, restartServer } from '../services/docker';
+import { readServerConfig } from '../services/files';
 
-const router = Router();
+const router = Router({ mergeParams: true });
 
-router.get('/status', async (_req, res, next) => {
+router.get('/status', async (req: Request<{ serverId: string }>, res, next) => {
   try {
-    const status = await getStatus();
-    res.json(status);
+    const { serverId } = req.params;
+    const status = await getStatus(serverId);
+    const config = await readServerConfig(serverId);
+    res.json({
+      ...status,
+      port: config.port ? Number(config.port) : null,
+      maxplayers: config.maxplayers ? Number(config.maxplayers) : null,
+    });
   } catch (err) {
     next(err);
   }
 });
 
-router.post('/start', async (_req, res, next) => {
+router.post('/start', async (req: Request<{ serverId: string }>, res, next) => {
   try {
-    await startServer();
+    await startServer(req.params.serverId);
     res.json({ success: true });
   } catch (err) {
     next(err);
   }
 });
 
-router.post('/stop', async (_req, res, next) => {
+router.post('/stop', async (req: Request<{ serverId: string }>, res, next) => {
   try {
-    await stopServer();
+    await stopServer(req.params.serverId);
     res.json({ success: true });
   } catch (err) {
     next(err);
   }
 });
 
-router.post('/restart', async (_req, res, next) => {
+router.post('/restart', async (req: Request<{ serverId: string }>, res, next) => {
   try {
-    await restartServer();
+    await restartServer(req.params.serverId);
     res.json({ success: true });
   } catch (err) {
     next(err);

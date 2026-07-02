@@ -1,19 +1,23 @@
 import Docker from 'dockerode';
-import { TMOD_CONTAINER_NAME } from '../config';
+import path from 'path';
+import { getServerById, getServerPaths } from '../servers';
 
 const docker = new Docker();
 
-async function getContainer() {
+async function getContainer(serverId: string) {
+  const server = await getServerById(serverId);
   const containers = await docker.listContainers({ all: true });
   const info = containers.find(
-    (c) => c.Names.includes(`/${TMOD_CONTAINER_NAME}`) || c.Id.startsWith(TMOD_CONTAINER_NAME)
+    (c) =>
+      c.Names.includes(`/${server.containerName}`) ||
+      c.Id.startsWith(server.containerName)
   );
   if (!info) return null;
   return docker.getContainer(info.Id);
 }
 
-export async function getStatus() {
-  const container = await getContainer();
+export async function getStatus(serverId: string) {
+  const container = await getContainer(serverId);
   if (!container) {
     return { state: 'missing', id: null };
   }
@@ -30,26 +34,26 @@ export async function getStatus() {
   };
 }
 
-export async function startServer() {
-  const container = await getContainer();
+export async function startServer(serverId: string) {
+  const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   await container.start();
 }
 
-export async function stopServer() {
-  const container = await getContainer();
+export async function stopServer(serverId: string) {
+  const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   await container.stop({ t: 30 });
 }
 
-export async function restartServer() {
-  const container = await getContainer();
+export async function restartServer(serverId: string) {
+  const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   await container.restart({ t: 30 });
 }
 
-export async function injectCommand(command: string) {
-  const container = await getContainer();
+export async function injectCommand(serverId: string, command: string) {
+  const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   const exec = await container.exec({
     Cmd: ['inject', command],
@@ -60,16 +64,17 @@ export async function injectCommand(command: string) {
 }
 
 export async function streamLogs(
+  serverId: string,
   onData: (chunk: string) => void,
   onError: (err: Error) => void
 ): Promise<{ destroy: () => void }> {
-  const container = await getContainer();
+  const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   const stream = await container.logs({
     follow: true,
     stdout: true,
     stderr: true,
-    tail: 100,
+    tail: 200,
     timestamps: false,
   });
   stream.on('data', (chunk: Buffer) => {
@@ -102,7 +107,9 @@ function parseDockerLog(buffer: Buffer): string[] {
   return lines;
 }
 
-export async function runSteamCmd(workshopId: string): Promise<void> {
+export async function runSteamCmd(serverId: string, workshopId: string): Promise<void> {
+  const server = await getServerById(serverId);
+  const paths = getServerPaths(server);
   const image = 'steamcmd/steamcmd:ubuntu-22';
   // Pull if missing
   try {
@@ -120,7 +127,7 @@ export async function runSteamCmd(workshopId: string): Promise<void> {
     image,
     [
       '+force_install_dir',
-      '/data/steamMods',
+      paths.steamModsDir,
       '+login',
       'anonymous',
       '+workshop_download_item',
@@ -131,7 +138,7 @@ export async function runSteamCmd(workshopId: string): Promise<void> {
     process.stdout,
     {
       HostConfig: {
-        Binds: [`/data/steamMods:/data/steamMods`],
+        Binds: [`${paths.steamModsDir}:${paths.steamModsDir}`],
         AutoRemove: true,
       },
     }
@@ -139,19 +146,22 @@ export async function runSteamCmd(workshopId: string): Promise<void> {
 }
 
 export async function createWorld(
+  serverId: string,
   name: string,
   size: number,
   difficulty: number,
   seed?: string
 ): Promise<void> {
+  const server = await getServerById(serverId);
+  const paths = getServerPaths(server);
   const image = 'tmodvision-tmodloader'; // same image as server service
-  const worldPath = `/data/tModLoader/Worlds/${name}.wld`;
+  const worldPath = path.join(paths.worldsDir, `${name}.wld`);
   const args = [
     '-server',
     '-tmlsavedirectory',
-    '/data/tModLoader',
+    paths.tmodDir,
     '-steamworkshopfolder',
-    '/data/steamMods/steamapps/workshop',
+    path.join(paths.steamModsDir, 'steamapps', 'workshop'),
     '-world',
     worldPath,
     '-autocreate',
@@ -167,10 +177,10 @@ export async function createWorld(
     Image: image,
     Cmd: ['/terraria-server/LaunchUtils/ScriptCaller.sh', ...args],
     HostConfig: {
-      Binds: [`/data:/data`],
+      Binds: [`${server.dataDir}:${server.dataDir}`],
       AutoRemove: false,
     },
-    name: `tmodvision-worldcreate-${Date.now()}`,
+    name: `tmodvision-worldcreate-${server.id}-${Date.now()}`,
   });
 
   await container.start();
@@ -185,7 +195,7 @@ export async function createWorld(
       await fs.access(worldPath);
       // Also wait for .twld
       try {
-        await fs.access(`/data/tModLoader/Worlds/${name}.twld`);
+        await fs.access(path.join(paths.worldsDir, `${name}.twld`));
       } catch {
         continue;
       }

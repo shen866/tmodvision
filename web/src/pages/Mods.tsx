@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,6 +31,7 @@ function formatBytes(bytes: number) {
 }
 
 export default function ModsPage() {
+  const { serverId } = useParams<{ serverId: string }>();
   const [mods, setMods] = useState<Mod[]>([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<WorkshopResult[]>([]);
@@ -39,26 +41,32 @@ export default function ModsPage() {
   const [searchError, setSearchError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Mod | null>(null);
 
+  const serverApi = serverId ? api.forServer(serverId) : null;
+
   const fetchMods = async () => {
-    const data = await api.get('/api/mods');
+    if (!serverApi) return;
+    const data = await serverApi.get('/mods');
     setMods(data);
   };
 
   useEffect(() => {
     fetchMods();
-  }, []);
+  }, [serverId]);
 
   const toggle = async (mod: Mod) => {
+    if (!serverApi) return;
     if (mod.enabled) {
-      await api.post(`/api/mods/${encodeURIComponent(mod.name)}/disable`);
+      await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/disable`);
     } else {
-      await api.post(`/api/mods/${encodeURIComponent(mod.name)}/enable`);
+      await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/enable`);
     }
+    setMessage(`${mod.name} 已${mod.enabled ? '禁用' : '启用'}，重启服务器后生效`);
     await fetchMods();
   };
 
   const deleteMod = async (mod: Mod) => {
-    await api.del(`/api/mods/${encodeURIComponent(mod.name)}`);
+    if (!serverApi) return;
+    await serverApi.del(`/mods/${encodeURIComponent(mod.name)}`);
     setDeleteTarget(null);
     await fetchMods();
   };
@@ -77,17 +85,22 @@ export default function ModsPage() {
   };
 
   const install = async (id: string) => {
+    if (!serverApi) return;
     setLoading(true);
     setMessage('');
     try {
-      await api.post('/api/mods/workshop/install', { workshopId: id });
-      setMessage(`模组 ${id} 安装成功`);
+      await serverApi.post('/mods/workshop/install', { workshopId: id });
+      setMessage(`模组 ${id} 安装成功，重启服务器后生效`);
       await fetchMods();
     } catch (e: any) {
       setMessage(e.message || '安装失败');
     }
     setLoading(false);
   };
+
+  if (!serverApi) {
+    return <div className="p-10 text-center">缺少服务器标识</div>;
+  }
 
   return (
     <div className="space-y-6">

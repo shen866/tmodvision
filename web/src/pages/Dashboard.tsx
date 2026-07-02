@@ -4,28 +4,43 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { useServers } from '@/contexts/ServerContext';
+
+interface ServerStatus {
+  state: string;
+  port: number | null;
+  maxplayers: number | null;
+}
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const { servers, refreshServers } = useServers();
+  const [statuses, setStatuses] = useState<Record<string, ServerStatus>>({});
 
-  const fetchStatus = async () => {
-    const s = await api.get('/api/server/status');
-    setStatus(s);
+  const fetchStatuses = async () => {
+    const next: Record<string, ServerStatus> = {};
+    await Promise.all(
+      servers.map(async (s) => {
+        try {
+          const status = await api.forServer(s.id).get('/status');
+          next[s.id] = status;
+        } catch {
+          next[s.id] = { state: 'unknown', port: s.port, maxplayers: null };
+        }
+      })
+    );
+    setStatuses(next);
   };
 
   useEffect(() => {
-    fetchStatus();
-    const id = setInterval(fetchStatus, 3000);
-    return () => clearInterval(id);
+    refreshServers();
   }, []);
 
-  const action = async (path: string) => {
-    setLoading(true);
-    await api.post(path);
-    await fetchStatus();
-    setLoading(false);
-  };
+  useEffect(() => {
+    if (servers.length === 0) return;
+    fetchStatuses();
+    const id = setInterval(fetchStatuses, 3000);
+    return () => clearInterval(id);
+  }, [servers]);
 
   const stateBadge = (state: string) => {
     if (state === 'running') return <Badge>运行中</Badge>;
@@ -35,73 +50,43 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">仪表盘</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">仪表盘</h1>
+        <Button variant="outline" size="sm" onClick={refreshServers}>
+          刷新
+        </Button>
+      </div>
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>服务器状态</CardTitle>
-            <CardDescription>{status ? stateBadge(status.state) : '加载中...'}</CardDescription>
-          </CardHeader>
-          <CardContent className="flex gap-2">
-            <Button size="sm" onClick={() => action('/api/server/start')} disabled={loading || status?.state === 'running'}>
-              启动
-            </Button>
-            <Button size="sm" variant="secondary" onClick={() => action('/api/server/stop')} disabled={loading || status?.state !== 'running'}>
-              停止
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => action('/api/server/restart')} disabled={loading}>
-              重启
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>模组</CardTitle>
-            <CardDescription>管理已安装模组与工坊搜索</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button size="sm" asChild>
-              <Link to="/mods">前往模组页</Link>
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>世界</CardTitle>
-            <CardDescription>创建、切换、备份世界</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button size="sm" asChild>
-              <Link to="/worlds">前往世界页</Link>
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>配置</CardTitle>
-            <CardDescription>修改 serverconfig.txt</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button size="sm" asChild>
-              <Link to="/config">编辑配置</Link>
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>控制台</CardTitle>
-            <CardDescription>实时日志与命令</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button size="sm" asChild>
-              <Link to="/console">打开控制台</Link>
-            </Button>
-          </CardContent>
-        </Card>
+        {servers.map((server) => {
+          const status = statuses[server.id];
+          return (
+            <Card key={server.id}>
+              <CardHeader>
+                <CardTitle>{server.name}</CardTitle>
+                <CardDescription>
+                  {status ? stateBadge(status.state) : '加载中...'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-sm">
+                  <span className="text-muted-foreground">端口:</span> {server.port}
+                </p>
+                <p className="text-sm">
+                  <span className="text-muted-foreground">玩家:</span>{' '}
+                  {status?.maxplayers ? `- / ${status.maxplayers}` : '-'}
+                </p>
+                <Button size="sm" asChild className="w-full">
+                  <Link to={`/server/${server.id}`}>进入管理</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          );
+        })}
+        {servers.length === 0 && (
+          <p className="text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
+            暂无服务器配置，请在 ./data/servers.json 中配置或启动默认单服模式。
+          </p>
+        )}
       </div>
     </div>
   );

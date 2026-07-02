@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,6 +22,7 @@ function formatBytes(bytes: number) {
 }
 
 export default function WorldsPage() {
+  const { serverId } = useParams<{ serverId: string }>();
   const [worlds, setWorlds] = useState<World[]>([]);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [name, setName] = useState('');
@@ -30,25 +32,29 @@ export default function WorldsPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
+  const serverApi = serverId ? api.forServer(serverId) : null;
+
   const fetchWorlds = async () => {
-    const data = await api.get('/api/worlds');
+    if (!serverApi) return;
+    const data = await serverApi.get('/worlds');
     setWorlds(data);
-    const cfg = await api.get('/api/config');
+    const cfg = await serverApi.get('/config');
     setConfig(cfg);
   };
 
   useEffect(() => {
     fetchWorlds();
-  }, []);
+  }, [serverId]);
 
   const activeWorld = config.world?.split('/').pop()?.replace('.wld', '') || '';
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!serverApi) return;
     setLoading(true);
     setMessage('');
     try {
-      await api.post('/api/worlds', { name, size: Number(size), difficulty: Number(difficulty), seed });
+      await serverApi.post('/worlds', { name, size: Number(size), difficulty: Number(difficulty), seed });
       setMessage('世界创建成功');
       setName('');
       await fetchWorlds();
@@ -59,21 +65,28 @@ export default function WorldsPage() {
   };
 
   const del = async (name: string) => {
+    if (!serverApi) return;
     if (!confirm(`确定删除世界 ${name} 吗？`)) return;
-    await api.del(`/api/worlds/${encodeURIComponent(name)}`);
+    await serverApi.del(`/worlds/${encodeURIComponent(name)}`);
     await fetchWorlds();
   };
 
   const backup = async (name: string) => {
-    const res = await api.post(`/api/worlds/${encodeURIComponent(name)}/backup`);
+    if (!serverApi) return;
+    const res = await serverApi.post(`/worlds/${encodeURIComponent(name)}/backup`);
     setMessage(`已备份: ${res.fileName}`);
   };
 
   const activate = async (name: string) => {
-    await api.post(`/api/worlds/${encodeURIComponent(name)}/activate`);
+    if (!serverApi) return;
+    await serverApi.post(`/worlds/${encodeURIComponent(name)}/activate`);
     setMessage(`已切换至世界 ${name}，重启服务器后生效`);
     await fetchWorlds();
   };
+
+  if (!serverApi) {
+    return <div className="p-10 text-center">缺少服务器标识</div>;
+  }
 
   return (
     <div className="space-y-6">

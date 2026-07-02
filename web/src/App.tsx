@@ -1,7 +1,8 @@
-import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useLocation, useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { ServerProvider, useServers } from '@/contexts/ServerContext';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import ServerPage from '@/pages/Server';
@@ -10,16 +11,63 @@ import WorldsPage from '@/pages/Worlds';
 import ConfigPage from '@/pages/Config';
 import ConsolePage from '@/pages/Console';
 
+function ServerSidebar() {
+  const location = useLocation();
+  const { serverId } = useParams<{ serverId: string }>();
+  const { servers, currentServerId, setCurrentServerId } = useServers();
+
+  if (!serverId) return null;
+
+  const links = [
+    { path: `/server/${serverId}`, label: '详情' },
+    { path: `/server/${serverId}/console`, label: '控制台' },
+    { path: `/server/${serverId}/mods`, label: '模组' },
+    { path: `/server/${serverId}/worlds`, label: '世界' },
+    { path: `/server/${serverId}/config`, label: '配置' },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="space-y-1">
+        <p className="px-3 text-xs font-medium text-muted-foreground">当前服务器</p>
+        <select
+          value={currentServerId || ''}
+          onChange={(e) => {
+            const id = e.target.value;
+            setCurrentServerId(id);
+            window.location.href = `/server/${id}`;
+          }}
+          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+        >
+          {servers.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} ({s.port})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex flex-col gap-1">
+        {links.map((link) => (
+          <Link
+            key={link.path}
+            to={link.path}
+            className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+              location.pathname === link.path
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            }`}
+          >
+            {link.label}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const links = [
-    { path: '/', label: '仪表盘' },
-    { path: '/server', label: '服务器' },
-    { path: '/mods', label: '模组' },
-    { path: '/worlds', label: '世界' },
-    { path: '/config', label: '配置' },
-    { path: '/console', label: '控制台' },
-  ];
+  const isHome = location.pathname === '/';
 
   const logout = () => {
     localStorage.removeItem('tmodvision_token');
@@ -31,7 +79,9 @@ function Layout({ children }: { children: React.ReactNode }) {
       <header className="border-b bg-background px-6 py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-primary">tModVision</span>
+            <Link to="/" className="text-xl font-bold text-primary">
+              tModVision
+            </Link>
             <span className="text-xs text-muted-foreground">个人 tModLoader 服务器</span>
           </div>
           <Button variant="ghost" size="sm" onClick={logout}>
@@ -40,20 +90,18 @@ function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <div className="mx-auto flex w-full max-w-6xl flex-1 gap-6 overflow-hidden p-6">
-        <aside className="hidden w-48 shrink-0 flex-col gap-1 overflow-y-auto md:flex">
-          {links.map((link) => (
-            <Link
-              key={link.path}
-              to={link.path}
-              className={`rounded-md px-3 py-2 text-sm font-medium transition ${
-                location.pathname === link.path
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-              }`}
-            >
-              {link.label}
-            </Link>
-          ))}
+        <aside className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto md:flex">
+          <Link
+            to="/"
+            className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+              isHome
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            }`}
+          >
+            仪表盘
+          </Link>
+          {!isHome && <ServerSidebar />}
         </aside>
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
@@ -79,7 +127,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (checking) return <div className="p-10 text-center">验证中...</div>;
   if (!valid) return <Navigate to="/login" replace />;
-  return <Layout>{children}</Layout>;
+  return (
+    <ServerProvider>
+      <Layout>{children}</Layout>
+    </ServerProvider>
+  );
 }
 
 function App() {
@@ -95,7 +147,7 @@ function App() {
         }
       />
       <Route
-        path="/server"
+        path="/server/:serverId"
         element={
           <ProtectedRoute>
             <ServerPage />
@@ -103,7 +155,15 @@ function App() {
         }
       />
       <Route
-        path="/mods"
+        path="/server/:serverId/console"
+        element={
+          <ProtectedRoute>
+            <ConsolePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/server/:serverId/mods"
         element={
           <ProtectedRoute>
             <ModsPage />
@@ -111,7 +171,7 @@ function App() {
         }
       />
       <Route
-        path="/worlds"
+        path="/server/:serverId/worlds"
         element={
           <ProtectedRoute>
             <WorldsPage />
@@ -119,18 +179,10 @@ function App() {
         }
       />
       <Route
-        path="/config"
+        path="/server/:serverId/config"
         element={
           <ProtectedRoute>
             <ConfigPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/console"
-        element={
-          <ProtectedRoute>
-            <ConsolePage />
           </ProtectedRoute>
         }
       />

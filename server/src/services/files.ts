@@ -1,16 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import {
-  MODS_DIR,
-  WORLDS_DIR,
-  BACKUPS_DIR,
-  SERVER_CONFIG_PATH,
-  ENABLED_MODS_PATH,
-  WORKSHOP_MAP_PATH,
-  WORKSHOP_DIR,
-} from '../config';
-
-export { MODS_DIR, WORLDS_DIR, BACKUPS_DIR, SERVER_CONFIG_PATH, ENABLED_MODS_PATH, WORKSHOP_MAP_PATH, WORKSHOP_DIR };
+import { listServers, getServerById, getServerPaths } from '../servers';
 
 export interface ModInfo {
   name: string;
@@ -30,34 +20,42 @@ export interface WorkshopMap {
 }
 
 export async function ensureDirs() {
-  await fs.mkdir(MODS_DIR, { recursive: true });
-  await fs.mkdir(WORLDS_DIR, { recursive: true });
-  await fs.mkdir(BACKUPS_DIR, { recursive: true });
-  await fs.mkdir(WORKSHOP_DIR, { recursive: true });
+  const servers = await listServers();
+  for (const server of servers) {
+    const paths = getServerPaths(server);
+    await fs.mkdir(paths.modsDir, { recursive: true });
+    await fs.mkdir(paths.worldsDir, { recursive: true });
+    await fs.mkdir(paths.backupsDir, { recursive: true });
+    await fs.mkdir(paths.workshopDir, { recursive: true });
+  }
 }
 
-export async function readEnabledMods(): Promise<string[]> {
+export async function readEnabledMods(serverId: string): Promise<string[]> {
+  const paths = getServerPaths(await resolveServer(serverId));
   try {
-    const raw = await fs.readFile(ENABLED_MODS_PATH, 'utf-8');
+    const raw = await fs.readFile(paths.enabledModsPath, 'utf-8');
     return JSON.parse(raw) as string[];
   } catch {
-    await fs.writeFile(ENABLED_MODS_PATH, '[]');
+    await fs.writeFile(paths.enabledModsPath, '[]');
     return [];
   }
 }
 
-export async function writeEnabledMods(mods: string[]) {
-  await fs.writeFile(ENABLED_MODS_PATH, JSON.stringify(mods, null, 2));
+export async function writeEnabledMods(serverId: string, mods: string[]) {
+  const paths = getServerPaths(await resolveServer(serverId));
+  await fs.writeFile(paths.enabledModsPath, JSON.stringify(mods, null, 2));
 }
 
-export async function listInstalledMods(): Promise<ModInfo[]> {
-  const enabled = new Set(await readEnabledMods());
+export async function listInstalledMods(serverId: string): Promise<ModInfo[]> {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  const enabled = new Set(await readEnabledMods(serverId));
   const entries: ModInfo[] = [];
   try {
-    const files = await fs.readdir(MODS_DIR, { withFileTypes: true });
+    const files = await fs.readdir(paths.modsDir, { withFileTypes: true });
     for (const f of files) {
       if (!f.isFile() || !f.name.endsWith('.tmod')) continue;
-      const stat = await fs.stat(path.join(MODS_DIR, f.name));
+      const stat = await fs.stat(path.join(paths.modsDir, f.name));
       const name = f.name.slice(0, -5);
       entries.push({
         name,
@@ -72,40 +70,44 @@ export async function listInstalledMods(): Promise<ModInfo[]> {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function enableMod(name: string) {
-  const mods = await readEnabledMods();
+export async function enableMod(serverId: string, name: string) {
+  const mods = await readEnabledMods(serverId);
   if (!mods.includes(name)) {
     mods.push(name);
-    await writeEnabledMods(mods);
+    await writeEnabledMods(serverId, mods);
   }
 }
 
-export async function disableMod(name: string) {
-  const mods = await readEnabledMods();
+export async function disableMod(serverId: string, name: string) {
+  const mods = await readEnabledMods(serverId);
   const idx = mods.indexOf(name);
   if (idx !== -1) {
     mods.splice(idx, 1);
-    await writeEnabledMods(mods);
+    await writeEnabledMods(serverId, mods);
   }
 }
 
-export async function deleteMod(name: string) {
-  await disableMod(name);
-  const filePath = path.join(MODS_DIR, `${name}.tmod`);
+export async function deleteMod(serverId: string, name: string) {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  await disableMod(serverId, name);
+  const filePath = path.join(paths.modsDir, `${name}.tmod`);
   await fs.unlink(filePath);
 }
 
-export async function listWorlds(): Promise<WorldInfo[]> {
+export async function listWorlds(serverId: string): Promise<WorldInfo[]> {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
   const entries: WorldInfo[] = [];
   try {
-    const files = await fs.readdir(WORLDS_DIR, { withFileTypes: true });
+    const files = await fs.readdir(paths.worldsDir, { withFileTypes: true });
     const seen = new Set<string>();
     for (const f of files) {
       if (!f.isFile() || !f.name.endsWith('.wld')) continue;
       const name = f.name.slice(0, -4);
       if (seen.has(name)) continue;
       seen.add(name);
-      const stat = await fs.stat(path.join(WORLDS_DIR, f.name));
+      const stat = await fs.stat(path.join(paths.worldsDir, f.name));
       entries.push({ name, size: stat.size, mtime: stat.mtime });
     }
   } catch {
@@ -114,19 +116,25 @@ export async function listWorlds(): Promise<WorldInfo[]> {
   return entries.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 }
 
-export async function deleteWorld(name: string) {
-  const wld = path.join(WORLDS_DIR, `${name}.wld`);
-  const twld = path.join(WORLDS_DIR, `${name}.twld`);
+export async function deleteWorld(serverId: string, name: string) {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  const wld = path.join(paths.worldsDir, `${name}.wld`);
+  const twld = path.join(paths.worldsDir, `${name}.twld`);
+  const twldBak = path.join(paths.worldsDir, `${name}.twld.bak`);
   await fs.unlink(wld).catch(() => {});
   await fs.unlink(twld).catch(() => {});
+  await fs.unlink(twldBak).catch(() => {});
 }
 
-export async function backupWorld(name: string): Promise<string> {
-  const wld = path.join(WORLDS_DIR, `${name}.wld`);
-  const twld = path.join(WORLDS_DIR, `${name}.twld`);
+export async function backupWorld(serverId: string, name: string): Promise<string> {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  const wld = path.join(paths.worldsDir, `${name}.wld`);
+  const twld = path.join(paths.worldsDir, `${name}.twld`);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupName = `${name}-${timestamp}.zip`;
-  const backupPath = path.join(BACKUPS_DIR, backupName);
+  const backupName = `${server.id}-${name}-${timestamp}.zip`;
+  const backupPath = path.join(paths.backupsDir, backupName);
 
   // Use system zip if available
   const { execSync } = await import('child_process');
@@ -134,9 +142,11 @@ export async function backupWorld(name: string): Promise<string> {
   return backupName;
 }
 
-export async function readServerConfig(): Promise<Record<string, string>> {
+export async function readServerConfig(serverId: string): Promise<Record<string, string>> {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
   try {
-    const raw = await fs.readFile(SERVER_CONFIG_PATH, 'utf-8');
+    const raw = await fs.readFile(paths.serverConfigPath, 'utf-8');
     const result: Record<string, string> = {};
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
@@ -151,7 +161,9 @@ export async function readServerConfig(): Promise<Record<string, string>> {
   }
 }
 
-export async function writeServerConfig(values: Record<string, string>) {
+export async function writeServerConfig(serverId: string, values: Record<string, string>) {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
   const lines: string[] = [
     '# tModLoader server configuration',
     '# Managed by tModVision',
@@ -187,26 +199,36 @@ export async function writeServerConfig(values: Record<string, string>) {
       lines.push(`${key}=${value}`);
     }
   }
-  await fs.writeFile(SERVER_CONFIG_PATH, lines.join('\n') + '\n');
+  await fs.writeFile(paths.serverConfigPath, lines.join('\n') + '\n');
 }
 
-export async function setActiveWorld(name: string) {
-  const config = await readServerConfig();
-  config.world = path.join(WORLDS_DIR, `${name}.wld`);
-  config.worldpath = WORLDS_DIR + '/';
+export async function setActiveWorld(serverId: string, name: string) {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  const config = await readServerConfig(serverId);
+  config.world = path.join(paths.worldsDir, `${name}.wld`);
+  config.worldpath = paths.worldsDir + '/';
   config.worldname = name;
-  await writeServerConfig(config);
+  await writeServerConfig(serverId, config);
 }
 
-export async function readWorkshopMap(): Promise<WorkshopMap> {
+export async function readWorkshopMap(serverId: string): Promise<WorkshopMap> {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
   try {
-    const raw = await fs.readFile(WORKSHOP_MAP_PATH, 'utf-8');
+    const raw = await fs.readFile(paths.workshopMapPath, 'utf-8');
     return JSON.parse(raw) as WorkshopMap;
   } catch {
     return {};
   }
 }
 
-export async function writeWorkshopMap(map: WorkshopMap) {
-  await fs.writeFile(WORKSHOP_MAP_PATH, JSON.stringify(map, null, 2));
+export async function writeWorkshopMap(serverId: string, map: WorkshopMap) {
+  const server = await resolveServer(serverId);
+  const paths = getServerPaths(server);
+  await fs.writeFile(paths.workshopMapPath, JSON.stringify(map, null, 2));
+}
+
+async function resolveServer(serverId: string) {
+  return getServerById(serverId);
 }

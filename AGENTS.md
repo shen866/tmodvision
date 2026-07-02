@@ -25,12 +25,14 @@ docker compose up -d --build
 
 ## 关键约定
 
-- 无数据库，所有状态存在 `./data/tModLoader/` 的 JSON/txt 文件中。
+- 无数据库，所有状态存在 `./data/` 的 JSON/txt 文件中。
 - 鉴权通过 `AUTH_TOKEN`（Bearer Token），无用户系统。
 - 后端通过 Docker socket 管理 `TMOD_CONTAINER_NAME` 容器。
 - 控制台命令通过 `docker exec <container> inject <cmd>` 注入 tmux 会话。
 - 模组启用/禁用通过 `enabled.json`（字符串数组）控制。
 - 工坊搜索需要 `STEAM_API_KEY`；未配置时仍可手动输入工坊 ID 安装。
+- 多服配置通过 `./data/servers.json` 管理；未配置时自动回退到单服模式（使用 `.env` 中的 `TMOD_CONTAINER_NAME` 与 `DATA_DIR`）。
+- 每个服务器拥有独立的 `dataDir`，但 `steamMods` 目录在所有服务器间共享，避免重复下载工坊模组。
 
 ## 修改后注意
 

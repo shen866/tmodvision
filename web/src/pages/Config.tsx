@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,34 +7,43 @@ import { Select, SelectOption } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function ConfigPage() {
+  const { serverId } = useParams<{ serverId: string }>();
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
+  const serverApi = serverId ? api.forServer(serverId) : null;
+
   const fetchConfig = async () => {
-    const data = await api.get('/api/config');
+    if (!serverApi) return;
+    const data = await serverApi.get('/config');
     setConfig(data);
   };
 
   useEffect(() => {
     fetchConfig();
-  }, []);
+  }, [serverId]);
 
   const update = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
   const save = async () => {
+    if (!serverApi) return;
     setLoading(true);
     setMessage('');
     try {
-      await api.post('/api/config', config);
+      await serverApi.post('/config', config);
       setMessage('配置已保存，重启服务器后生效');
     } catch (err: any) {
       setMessage(err.message || '保存失败');
     }
     setLoading(false);
   };
+
+  if (!serverApi) {
+    return <div className="p-10 text-center">缺少服务器标识</div>;
+  }
 
   return (
     <div className="space-y-6">

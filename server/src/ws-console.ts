@@ -10,8 +10,15 @@ export function attachConsole(server: HttpServer) {
   wss.on('connection', async (ws, req) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const token = url.searchParams.get('token') || '';
+    const serverId = url.searchParams.get('serverId') || '';
+
     if (!verifyToken(token)) {
       ws.close(1008, 'Unauthorized');
+      return;
+    }
+
+    if (!serverId) {
+      ws.close(1008, 'serverId is required');
       return;
     }
 
@@ -21,7 +28,7 @@ export function attachConsole(server: HttpServer) {
       try {
         const cmd = data.toString().trim();
         if (!cmd) return;
-        await injectCommand(cmd);
+        await injectCommand(serverId, cmd);
       } catch (err: any) {
         ws.send(`[tModVision] Failed to send command: ${err.message}\n`);
       }
@@ -33,6 +40,7 @@ export function attachConsole(server: HttpServer) {
 
     try {
       logStream = await streamLogs(
+        serverId,
         (line) => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(line);

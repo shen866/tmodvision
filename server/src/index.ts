@@ -5,6 +5,7 @@ import { authMiddleware } from './auth';
 import { PORT } from './config';
 import { ensureDirs } from './services/files';
 import { attachConsole } from './ws-console';
+import { listServers } from './servers';
 
 import serverRoutes from './routes/server';
 import modsRoutes from './routes/mods';
@@ -24,11 +25,24 @@ async function main() {
   // Auth verification
   app.post('/api/auth/verify', authMiddleware, (_req, res) => res.json({ valid: true }));
 
-  // Protected API routes
-  app.use('/api/server', authMiddleware, serverRoutes);
-  app.use('/api/mods', authMiddleware, modsRoutes);
-  app.use('/api/worlds', authMiddleware, worldsRoutes);
-  app.use('/api/config', authMiddleware, configRoutes);
+  // Server list (needed by Dashboard)
+  app.get('/api/servers', authMiddleware, async (_req, res, next) => {
+    try {
+      const servers = await listServers();
+      res.json(servers);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-server API routes
+  const serverRouter = express.Router({ mergeParams: true });
+  serverRouter.use('/mods', modsRoutes);
+  serverRouter.use('/worlds', worldsRoutes);
+  serverRouter.use('/config', configRoutes);
+  serverRouter.use('/', serverRoutes);
+
+  app.use('/api/server/:serverId', authMiddleware, serverRouter);
 
   // Serve React build
   const webDist = path.join(__dirname, 'public');

@@ -26,18 +26,29 @@ async function request(method: string, path: string, body?: any) {
   return json;
 }
 
+function forServer(serverId: string) {
+  const prefix = `/api/server/${encodeURIComponent(serverId)}`;
+  return {
+    get: (path: string) => request('GET', `${prefix}${path}`),
+    post: (path: string, body?: any) => request('POST', `${prefix}${path}`, body),
+    del: (path: string) => request('DELETE', `${prefix}${path}`),
+  };
+}
+
 export const api = {
   get: (path: string) => request('GET', path),
   post: (path: string, body?: any) => request('POST', path, body),
   del: (path: string) => request('DELETE', path),
+
+  forServer,
 
   verify: (token: string) =>
     fetch('/api/auth/verify', {
       headers: { Authorization: `Bearer ${token}` },
     }).then((r) => r.ok),
 
-  wsUrl: () => {
+  wsUrl: (serverId: string) => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${protocol}://${window.location.host}/ws/console?token=${getToken()}`;
+    return `${protocol}://${window.location.host}/ws/console?serverId=${encodeURIComponent(serverId)}&token=${getToken()}`;
   },
 };

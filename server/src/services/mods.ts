@@ -2,8 +2,10 @@ import path from 'path';
 import fs from 'fs/promises';
 import { glob } from 'glob';
 import {
-  MODS_DIR,
-  WORKSHOP_DIR,
+  getServerById,
+  getServerPaths,
+} from '../servers';
+import {
   readEnabledMods,
   writeEnabledMods,
   readWorkshopMap,
@@ -11,10 +13,12 @@ import {
 } from './files';
 import { runSteamCmd } from './docker';
 
-export async function installWorkshopMod(workshopId: string) {
-  await runSteamCmd(workshopId);
+export async function installWorkshopMod(serverId: string, workshopId: string) {
+  const server = await getServerById(serverId);
+  const paths = getServerPaths(server);
+  await runSteamCmd(serverId, workshopId);
 
-  const modDir = path.join(WORKSHOP_DIR, workshopId);
+  const modDir = path.join(paths.workshopDir, workshopId);
   const files = await glob('**/*.tmod', { cwd: modDir, absolute: true });
   if (files.length === 0) {
     throw new Error(`No .tmod file found after downloading workshop item ${workshopId}`);
@@ -28,12 +32,12 @@ export async function installWorkshopMod(workshopId: string) {
   const newest = withStat[0].path;
 
   const internalName = path.basename(newest, '.tmod');
-  const target = path.join(MODS_DIR, `${internalName}.tmod`);
+  const target = path.join(paths.modsDir, `${internalName}.tmod`);
   await fs.copyFile(newest, target);
 
-  const map = await readWorkshopMap();
+  const map = await readWorkshopMap(serverId);
   map[workshopId] = { fileName: `${internalName}.tmod` };
-  await writeWorkshopMap(map);
+  await writeWorkshopMap(serverId, map);
 
   return { workshopId, internalName, fileName: `${internalName}.tmod` };
 }
