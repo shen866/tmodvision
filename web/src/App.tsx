@@ -117,7 +117,7 @@ function Layout({ children }: { children: React.ReactNode }) {
           </Link>
           {!isHome && <ServerSidebar />}
         </aside>
-        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
       </div>
     </div>
   );

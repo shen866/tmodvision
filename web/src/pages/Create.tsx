@@ -91,7 +91,6 @@ export default function Create() {
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="例如：灾厄大修服"
                 required
               />
             </div>

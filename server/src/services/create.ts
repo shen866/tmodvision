@@ -52,6 +52,11 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
     port: Number(input.port) || 7777,
   };
 
+  // Register early so downstream helpers (copyModsPreset / createWorld) can resolve this server
+  servers.push(server);
+  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
+  invalidateServersCache();
+
   // Create directory structure
   const paths = getServerPaths(server);
   await fs.mkdir(paths.modsDir, { recursive: true });
@@ -109,11 +114,6 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
       input.world.seed
     );
   }
-
-  // Register in servers.json
-  servers.push(server);
-  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
-  invalidateServersCache();
 
   return server;
 }
