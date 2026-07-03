@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { DATA_DIR } from '../config';
+import { DATA_DIR, HOST_DATA_DIR } from '../config';
 import {
   ServerConfig,
   loadServers,
@@ -162,6 +162,15 @@ async function resolveTmodloaderTemplate(): Promise<string> {
   throw new Error('tmodloader template directory not found');
 }
 
+function toHostPath(containerPath: string): string {
+  if (HOST_DATA_DIR === DATA_DIR) return containerPath;
+  if (containerPath === DATA_DIR) return HOST_DATA_DIR;
+  if (containerPath.startsWith(DATA_DIR + '/')) {
+    return HOST_DATA_DIR + containerPath.slice(DATA_DIR.length);
+  }
+  return containerPath;
+}
+
 function generateComposeFile(server: ServerConfig): string {
   return `services:
   tmodloader:
@@ -193,6 +202,6 @@ function generateComposeFile(server: ServerConfig): string {
       - TMOD_UPNP=\${TMOD_UPNP:-0}
       - TMOD_PORT=\${TMOD_PORT:-7777}
     volumes:
-      - ${server.dataDir}:/data
+      - ${toHostPath(server.dataDir)}:/data
 `;
 }

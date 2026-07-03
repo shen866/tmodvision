@@ -1,8 +1,18 @@
 import Docker from 'dockerode';
 import path from 'path';
+import { DATA_DIR, HOST_DATA_DIR } from '../config';
 import { getServerById, getServerPaths } from '../servers';
 
 const docker = new Docker();
+
+function toHostPath(containerPath: string): string {
+  if (HOST_DATA_DIR === DATA_DIR) return containerPath;
+  if (containerPath === DATA_DIR) return HOST_DATA_DIR;
+  if (containerPath.startsWith(DATA_DIR + '/')) {
+    return HOST_DATA_DIR + containerPath.slice(DATA_DIR.length);
+  }
+  return containerPath;
+}
 
 export async function getContainer(serverId: string) {
   const server = await getServerById(serverId);
@@ -138,7 +148,7 @@ export async function runSteamCmd(serverId: string, workshopId: string): Promise
     process.stdout,
     {
       HostConfig: {
-        Binds: [`${paths.steamModsDir}:${paths.steamModsDir}`],
+        Binds: [`${toHostPath(paths.steamModsDir)}:${paths.steamModsDir}`],
         AutoRemove: true,
       },
     }
@@ -177,7 +187,7 @@ export async function createWorld(
     Image: image,
     Cmd: ['/terraria-server/LaunchUtils/ScriptCaller.sh', ...args],
     HostConfig: {
-      Binds: [`${server.dataDir}:${server.dataDir}`],
+      Binds: [`${toHostPath(server.dataDir)}:${server.dataDir}`],
       AutoRemove: false,
     },
     name: `tmodvision-worldcreate-${server.id}-${Date.now()}`,
