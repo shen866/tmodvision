@@ -10,14 +10,21 @@ export default function ServerPage() {
   const { serverId } = useParams<{ serverId: string }>();
   const { servers } = useServers();
   const [status, setStatus] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   const server = servers.find((s) => s.id === serverId);
 
   const fetchStatus = async () => {
     if (!serverId) return;
-    const s = await api.forServer(serverId).get('/status');
-    setStatus(s);
+    try {
+      const s = await api.forServer(serverId).get('/status');
+      setStatus(s);
+    } finally {
+      setInitialLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -26,12 +33,15 @@ export default function ServerPage() {
     return () => clearInterval(id);
   }, [serverId]);
 
-  const action = async (path: string) => {
+  const action = async (path: string, setter: (v: boolean) => void) => {
     if (!serverId) return;
-    setLoading(true);
-    await api.forServer(serverId).post(path);
-    await fetchStatus();
-    setLoading(false);
+    setter(true);
+    try {
+      await api.forServer(serverId).post(path);
+      await fetchStatus();
+    } finally {
+      setter(false);
+    }
   };
 
   if (!server) {
@@ -45,10 +55,14 @@ export default function ServerPage() {
           <h1 className="text-2xl font-bold">{server.name}</h1>
           <p className="text-sm text-muted-foreground">端口: {server.port}</p>
         </div>
-        {status && (
-          <Badge variant={status.state === 'running' ? 'default' : 'secondary'}>
-            {status.state === 'running' ? '运行中' : status.state}
-          </Badge>
+        {initialLoading ? (
+          <Badge variant="outline">加载中...</Badge>
+        ) : (
+          status && (
+            <Badge variant={status.state === 'running' ? 'default' : 'secondary'}>
+              {status.state === 'running' ? '运行中' : status.state}
+            </Badge>
+          )
         )}
       </div>
 
@@ -109,20 +123,28 @@ export default function ServerPage() {
         <CardContent className="flex gap-2">
           <Button
             size="sm"
-            onClick={() => action('/start')}
-            disabled={loading || status?.state === 'running'}
+            onClick={() => action('/start', setStarting)}
+            disabled={starting || stopping || restarting || status?.state === 'running'}
+            loading={starting}
           >
             启动
           </Button>
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => action('/stop')}
-            disabled={loading || status?.state !== 'running'}
+            onClick={() => action('/stop', setStopping)}
+            disabled={starting || stopping || restarting || status?.state !== 'running'}
+            loading={stopping}
           >
             停止
           </Button>
-          <Button variant="outline" size="sm" onClick={() => action('/restart')} disabled={loading}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => action('/restart', setRestarting)}
+            disabled={starting || stopping || restarting}
+            loading={restarting}
+          >
             重启
           </Button>
         </CardContent>

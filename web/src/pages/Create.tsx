@@ -178,8 +178,8 @@ export default function Create() {
         </Card>
 
         <div className="flex gap-2">
-          <Button type="submit" disabled={loading}>
-            {loading ? '创建中...' : '创建服务器'}
+          <Button type="submit" loading={loading} disabled={loading}>
+            创建服务器
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/')} disabled={loading}>
             取消

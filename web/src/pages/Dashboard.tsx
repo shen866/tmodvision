@@ -21,6 +21,7 @@ export default function Dashboard() {
   const { servers, refreshServers } = useServers();
   const [statuses, setStatuses] = useState<Record<string, ServerStatus>>({});
   const [players, setPlayers] = useState<Record<string, ServerPlayers>>({});
+  const [refreshing, setRefreshing] = useState(false);
 
   const fetchStatuses = async () => {
     const next: Record<string, ServerStatus> = {};
@@ -56,6 +57,13 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [servers]);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await refreshServers();
+    await fetchStatuses();
+    setRefreshing(false);
+  };
+
   const stateBadge = (state: string) => {
     if (state === 'running') return <Badge>运行中</Badge>;
     if (state === 'exited') return <Badge variant="secondary">已停止</Badge>;
@@ -67,7 +75,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">仪表盘</h1>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={refreshServers}>
+          <Button variant="outline" size="sm" onClick={handleRefresh} loading={refreshing} disabled={refreshing}>
             刷新
           </Button>
           <Button size="sm" asChild>

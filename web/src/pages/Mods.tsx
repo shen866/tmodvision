@@ -33,10 +33,14 @@ function formatBytes(bytes: number) {
 export default function ModsPage() {
   const { serverId } = useParams<{ serverId: string }>();
   const [mods, setMods] = useState<Mod[]>([]);
+  const [modsLoading, setModsLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<WorkshopResult[]>([]);
+  const [searching, setSearching] = useState(false);
   const [workshopId, setWorkshopId] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [searchError, setSearchError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Mod | null>(null);
@@ -45,8 +49,13 @@ export default function ModsPage() {
 
   const fetchMods = async () => {
     if (!serverApi) return;
-    const data = await serverApi.get('/mods');
-    setMods(data);
+    setModsLoading(true);
+    try {
+      const data = await serverApi.get('/mods');
+      setMods(data);
+    } finally {
+      setModsLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -55,24 +64,42 @@ export default function ModsPage() {
 
   const toggle = async (mod: Mod) => {
     if (!serverApi) return;
-    if (mod.enabled) {
-      await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/disable`);
-    } else {
-      await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/enable`);
+    setTogglingIds((prev) => new Set(prev).add(mod.name));
+    try {
+      if (mod.enabled) {
+        await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/disable`);
+      } else {
+        await serverApi.post(`/mods/${encodeURIComponent(mod.name)}/enable`);
+      }
+      setMessage(`${mod.name} 已${mod.enabled ? '禁用' : '启用'}，重启服务器后生效`);
+      await fetchMods();
+    } catch (err: any) {
+      setMessage(err.message || '操作失败');
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(mod.name);
+        return next;
+      });
     }
-    setMessage(`${mod.name} 已${mod.enabled ? '禁用' : '启用'}，重启服务器后生效`);
-    await fetchMods();
   };
 
   const deleteMod = async (mod: Mod) => {
     if (!serverApi) return;
-    await serverApi.del(`/mods/${encodeURIComponent(mod.name)}`);
-    setDeleteTarget(null);
-    await fetchMods();
+    setDeletingId(mod.name);
+    try {
+      await serverApi.del(`/mods/${encodeURIComponent(mod.name)}`);
+      setDeleteTarget(null);
+      await fetchMods();
+    } catch (err: any) {
+      setMessage(err.message || '删除失败');
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const search = async () => {
-    setLoading(true);
+    setSearching(true);
     setSearchError('');
     try {
       const data = await api.get(`/api/mods/workshop/search?q=${encodeURIComponent(query)}`);
@@ -80,27 +107,39 @@ export default function ModsPage() {
     } catch (e: any) {
       setSearchError(e.message || '搜索失败');
       setResults([]);
+    } finally {
+      setSearching(false);
     }
-    setLoading(false);
   };
 
   const install = async (id: string) => {
-    if (!serverApi) return;
-    setLoading(true);
+    if (!serverApi || !id) return;
+    setInstallingIds((prev) => new Set(prev).add(id));
     setMessage('');
     try {
       await serverApi.post('/mods/workshop/install', { workshopId: id });
       setMessage(`模组 ${id} 安装成功，重启服务器后生效`);
+      setQuery('');
+      setResults([]);
+      setWorkshopId('');
       await fetchMods();
     } catch (e: any) {
       setMessage(e.message || '安装失败');
+    } finally {
+      setInstallingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
-    setLoading(false);
   };
 
   if (!serverApi) {
     return <div className="p-10 text-center">缺少服务器标识</div>;
   }
+
+  const isInstalling = (id: string) => installingIds.has(id);
+  const isToggling = (name: string) => togglingIds.has(name);
 
   return (
     <div className="space-y-6">
@@ -115,8 +154,13 @@ export default function ModsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-2">
-            <Input placeholder="搜索创意工坊模组..." value={query} onChange={(e) => setQuery(e.target.value)} />
-            <Button onClick={search} disabled={loading || !query}>
+            <Input
+              placeholder="搜索创意工坊模组..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              disabled={searching}
+            />
+            <Button onClick={search} disabled={searching || !query} loading={searching}>
               搜索
             </Button>
           </div>
@@ -129,7 +173,12 @@ export default function ModsPage() {
                   <p className="text-xs text-muted-foreground">ID: {r.publishedFileId}</p>
                   <p className="line-clamp-2 text-sm text-muted-foreground">{r.description}</p>
                 </div>
-                <Button size="sm" onClick={() => install(r.publishedFileId)} disabled={loading}>
+                <Button
+                  size="sm"
+                  onClick={() => install(r.publishedFileId)}
+                  loading={isInstalling(r.publishedFileId)}
+                  disabled={isInstalling(r.publishedFileId)}
+                >
                   安装
                 </Button>
               </div>
@@ -143,8 +192,17 @@ export default function ModsPage() {
           <CardTitle>通过工坊 ID 安装</CardTitle>
         </CardHeader>
         <CardContent className="flex gap-2">
-          <Input placeholder="创意工坊 ID" value={workshopId} onChange={(e) => setWorkshopId(e.target.value)} />
-          <Button onClick={() => install(workshopId)} disabled={loading || !workshopId}>
+          <Input
+            placeholder="创意工坊 ID"
+            value={workshopId}
+            onChange={(e) => setWorkshopId(e.target.value)}
+            disabled={isInstalling(workshopId)}
+          />
+          <Button
+            onClick={() => install(workshopId)}
+            loading={isInstalling(workshopId)}
+            disabled={isInstalling(workshopId) || !workshopId}
+          >
             安装
           </Button>
         </CardContent>
@@ -155,24 +213,35 @@ export default function ModsPage() {
           <CardTitle>已安装模组</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {mods.map((mod) => (
-            <div key={mod.name} className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="font-medium">{mod.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {formatBytes(mod.size)} · {new Date(mod.mtime).toLocaleString()}
-                </p>
+          {modsLoading && <p className="text-sm text-muted-foreground">加载中...</p>}
+          {!modsLoading &&
+            mods.map((mod) => (
+              <div key={mod.name} className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <p className="font-medium">{mod.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatBytes(mod.size)} · {new Date(mod.mtime).toLocaleString()}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {mod.enabled ? <Badge>已启用</Badge> : <Badge variant="outline">未启用</Badge>}
+                  <Switch
+                    checked={mod.enabled}
+                    onCheckedChange={() => toggle(mod)}
+                    disabled={isToggling(mod.name)}
+                  />
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => setDeleteTarget(mod)}
+                    disabled={deletingId === mod.name}
+                  >
+                    删除
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                {mod.enabled ? <Badge>已启用</Badge> : <Badge variant="outline">未启用</Badge>}
-                <Switch checked={mod.enabled} onCheckedChange={() => toggle(mod)} />
-                <Button size="sm" variant="destructive" onClick={() => setDeleteTarget(mod)}>
-                  删除
-                </Button>
-              </div>
-            </div>
-          ))}
-          {mods.length === 0 && <p className="text-sm text-muted-foreground">暂无模组</p>}
+            ))}
+          {!modsLoading && mods.length === 0 && <p className="text-sm text-muted-foreground">暂无模组</p>}
         </CardContent>
       </Card>
 
@@ -182,10 +251,15 @@ export default function ModsPage() {
           <DialogDescription>确定要删除模组 {deleteTarget?.name} 吗？此操作不可恢复。</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+          <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={!!deletingId}>
             取消
           </Button>
-          <Button variant="destructive" onClick={() => deleteTarget && deleteMod(deleteTarget)}>
+          <Button
+            variant="destructive"
+            onClick={() => deleteTarget && deleteMod(deleteTarget)}
+            loading={!!deletingId}
+            disabled={!!deletingId}
+          >
             删除
           </Button>
         </DialogFooter>

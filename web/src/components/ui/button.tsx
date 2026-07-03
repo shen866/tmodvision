@@ -1,14 +1,17 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/spinner';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link';
   size?: 'default' | 'sm' | 'lg' | 'icon';
   asChild?: boolean;
+  loading?: boolean;
 }
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant = 'default', size = 'default', asChild, children, ...props }, ref) => {
+  ({ className, variant = 'default', size = 'default', asChild, loading, children, ...props }, ref) => {
+    const isLoading = loading === true;
     const variants = {
       default: 'bg-primary text-primary-foreground hover:bg-primary/90',
       destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
@@ -35,7 +38,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       });
     }
     return (
-      <button ref={ref} className={classes} {...props}>
+      <button ref={ref} className={classes} disabled={isLoading || props.disabled} {...props}>
+        {isLoading && <Spinner className="mr-2 h-4 w-4" />}
         {children}
       </button>
     );

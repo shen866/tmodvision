@@ -34,7 +34,11 @@ export default function Backups() {
   const { servers } = useServers();
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [config, setConfig] = useState<BackupConfig>({ enabled: false, intervalHours: 6, keepCount: 10 });
-  const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [restoringFile, setRestoringFile] = useState<string | null>(null);
+  const [deletingFile, setDeletingFile] = useState<string | null>(null);
+  const [savingConfig, setSavingConfig] = useState(false);
   const [message, setMessage] = useState('');
 
   const server = servers.find((s) => s.id === serverId);
@@ -53,13 +57,17 @@ export default function Backups() {
   };
 
   useEffect(() => {
-    fetchBackups();
-    fetchConfig();
+    const load = async () => {
+      setPageLoading(true);
+      await Promise.all([fetchBackups(), fetchConfig()]);
+      setPageLoading(false);
+    };
+    load();
   }, [serverId]);
 
   const create = async () => {
     if (!serverApi) return;
-    setLoading(true);
+    setCreating(true);
     setMessage('');
     try {
       const res = await serverApi.post('/backups');
@@ -67,14 +75,15 @@ export default function Backups() {
       await fetchBackups();
     } catch (err: any) {
       setMessage(err.message || '备份失败');
+    } finally {
+      setCreating(false);
     }
-    setLoading(false);
   };
 
   const restore = async (fileName: string) => {
     if (!serverApi) return;
     if (!confirm(`确定恢复备份 ${fileName} 吗？当前世界会自动预备份。`)) return;
-    setLoading(true);
+    setRestoringFile(fileName);
     setMessage('');
     try {
       const res = await serverApi.post(`/backups/${encodeURIComponent(fileName)}/restore`);
@@ -82,39 +91,44 @@ export default function Backups() {
       await fetchBackups();
     } catch (err: any) {
       setMessage(err.message || '恢复失败');
+    } finally {
+      setRestoringFile(null);
     }
-    setLoading(false);
   };
 
   const del = async (fileName: string) => {
     if (!serverApi) return;
     if (!confirm(`确定删除备份 ${fileName} 吗？`)) return;
-    setLoading(true);
+    setDeletingFile(fileName);
     try {
       await serverApi.del(`/backups/${encodeURIComponent(fileName)}`);
       await fetchBackups();
     } catch (err: any) {
       setMessage(err.message || '删除失败');
+    } finally {
+      setDeletingFile(null);
     }
-    setLoading(false);
   };
 
   const saveConfig = async () => {
     if (!serverApi) return;
-    setLoading(true);
+    setSavingConfig(true);
     setMessage('');
     try {
       await serverApi.post('/backups/config', config);
       setMessage('自动备份配置已保存');
     } catch (err: any) {
       setMessage(err.message || '保存失败');
+    } finally {
+      setSavingConfig(false);
     }
-    setLoading(false);
   };
 
   if (!serverApi) {
     return <div className="p-10 text-center">缺少服务器标识</div>;
   }
+
+  const isBusy = creating || savingConfig || !!restoringFile || !!deletingFile;
 
   return (
     <div className="space-y-6">
@@ -124,81 +138,102 @@ export default function Backups() {
       </div>
       {message && <p className="text-sm text-primary">{message}</p>}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>自动备份配置</CardTitle>
-          <CardDescription>配置修改后保存生效</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={config.enabled}
-              onCheckedChange={(v) => setConfig((c) => ({ ...c, enabled: v }))}
-            />
-            <span className="text-sm font-medium">启用自动备份</span>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="text-sm font-medium">间隔（小时）</label>
-              <Input
-                type="number"
-                value={config.intervalHours}
-                onChange={(e) => setConfig((c) => ({ ...c, intervalHours: Number(e.target.value) }))}
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium">保留数量</label>
-              <Input
-                type="number"
-                value={config.keepCount}
-                onChange={(e) => setConfig((c) => ({ ...c, keepCount: Number(e.target.value) }))}
-              />
-            </div>
-          </div>
-          <Button onClick={saveConfig} disabled={loading}>
-            保存配置
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>手动备份</CardTitle>
-          <CardDescription>立即备份当前世界</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={create} disabled={loading}>
-            立即备份
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>备份列表</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {backups.map((b) => (
-            <div key={b.fileName} className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="font-medium">{b.worldName}</p>
-                <p className="text-xs text-muted-foreground">
-                  {formatBytes(b.size)} · {new Date(b.createdAt).toLocaleString()}
-                </p>
+      {pageLoading ? (
+        <p className="text-sm text-muted-foreground">加载中...</p>
+      ) : (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>自动备份配置</CardTitle>
+              <CardDescription>配置修改后保存生效</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={config.enabled}
+                  onCheckedChange={(v) => setConfig((c) => ({ ...c, enabled: v }))}
+                  disabled={savingConfig}
+                />
+                <span className="text-sm font-medium">启用自动备份</span>
               </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="secondary" onClick={() => restore(b.fileName)} disabled={loading}>
-                  恢复
-                </Button>
-                <Button size="sm" variant="destructive" onClick={() => del(b.fileName)} disabled={loading}>
-                  删除
-                </Button>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium">间隔（小时）</label>
+                  <Input
+                    type="number"
+                    value={config.intervalHours}
+                    onChange={(e) => setConfig((c) => ({ ...c, intervalHours: Number(e.target.value) }))}
+                    disabled={savingConfig}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">保留数量</label>
+                  <Input
+                    type="number"
+                    value={config.keepCount}
+                    onChange={(e) => setConfig((c) => ({ ...c, keepCount: Number(e.target.value) }))}
+                    disabled={savingConfig}
+                  />
+                </div>
               </div>
-            </div>
-          ))}
-          {backups.length === 0 && <p className="text-sm text-muted-foreground">暂无备份</p>}
-        </CardContent>
-      </Card>
+              <Button onClick={saveConfig} disabled={savingConfig} loading={savingConfig}>
+                保存配置
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>手动备份</CardTitle>
+              <CardDescription>立即备份当前世界</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={create} disabled={isBusy} loading={creating}>
+                立即备份
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>备份列表</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {backups.map((b) => (
+                <div key={b.fileName} className="flex items-center justify-between rounded-md border p-3">
+                  <div>
+                    <p className="font-medium">{b.worldName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatBytes(b.size)} · {new Date(b.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => restore(b.fileName)}
+                      loading={restoringFile === b.fileName}
+                      disabled={isBusy}
+                    >
+                      恢复
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => del(b.fileName)}
+                      loading={deletingFile === b.fileName}
+                      disabled={isBusy}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              {backups.length === 0 && <p className="text-sm text-muted-foreground">暂无备份</p>}
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 }

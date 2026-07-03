@@ -8,17 +8,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 export default function Login() {
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const ok = await api.verify(token);
-    if (ok) {
-      localStorage.setItem('tmodvision_token', token);
-      navigate('/', { replace: true });
-    } else {
-      setError('Token 无效');
+    setLoading(true);
+    try {
+      const ok = await api.verify(token);
+      if (ok) {
+        localStorage.setItem('tmodvision_token', token);
+        navigate('/', { replace: true });
+      } else {
+        setError('Token 无效');
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -38,8 +44,8 @@ export default function Login() {
               onChange={(e) => setToken(e.target.value)}
             />
             {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button type="submit" className="w-full">
-              登录
+            <Button type="submit" className="w-full" loading={loading}>
+              验证并登录
             </Button>
           </form>
         </CardContent>
