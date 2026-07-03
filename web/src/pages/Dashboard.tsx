@@ -103,7 +103,7 @@ export default function Dashboard() {
         })}
         {servers.length === 0 && (
           <p className="text-sm text-muted-foreground md:col-span-2 lg:col-span-3">
-            暂无服务器配置，请在 ./data/servers.json 中配置或启动默认单服模式。
+            暂无服务器配置，点击右上角"新建服务器"按钮手动创建。
           </p>
         )}
       </div>

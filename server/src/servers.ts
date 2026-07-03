@@ -29,17 +29,8 @@ export async function loadServers(): Promise<ServerConfig[]> {
     cachedServers = parsed.map(normalizeServer);
     return cachedServers;
   } catch {
-    // Fallback to legacy single-server mode
-    cachedServers = [
-      normalizeServer({
-        id: 'default',
-        name: '默认服务器',
-        containerName: TMOD_CONTAINER_NAME,
-        composeDir: '/app',
-        dataDir: DATA_DIR,
-        port: 7777,
-      }),
-    ];
+    // No servers.json yet: user must create servers through the panel
+    cachedServers = [];
     return cachedServers;
   }
 }
