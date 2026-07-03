@@ -6,6 +6,7 @@ import {
   deleteBackup,
   loadBackupConfig,
   saveBackupConfig,
+  restartAutoBackupScheduler,
 } from '../services/backups';
 
 const router = Router({ mergeParams: true });
@@ -64,6 +65,8 @@ router.post('/config', async (req: Request<{ serverId: string }>, res, next) => 
       intervalHours: Number(intervalHours) || 6,
       keepCount: Number(keepCount) || 10,
     });
+    // Re-apply the scheduler so changes take effect immediately.
+    await restartAutoBackupScheduler();
     res.json({ success: true });
   } catch (err) {
     next(err);

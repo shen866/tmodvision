@@ -4,6 +4,7 @@ import path from 'path';
 import { authMiddleware } from './auth';
 import { PORT } from './config';
 import { ensureDirs } from './services/files';
+import { cleanupOrphanedWorldCreators } from './services/docker';
 import { attachConsole } from './ws-console';
 import { listServers } from './servers';
 import { startAutoBackupScheduler } from './services/backups';
@@ -19,6 +20,7 @@ import backupsRoutes from './routes/backups';
 
 async function main() {
   await ensureDirs();
+  await cleanupOrphanedWorldCreators();
 
   const app = express();
   app.use(cors());
@@ -53,6 +55,11 @@ async function main() {
 
   // Global resources
   app.use('/api/resources', authMiddleware, resourcesRoutes);
+
+  // Unknown /api/* routes should return JSON 404, not the SPA HTML.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
 
   // Serve React build
   const webDist = path.join(__dirname, 'public');

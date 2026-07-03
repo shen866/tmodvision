@@ -4,6 +4,9 @@ import { URL } from 'url';
 import { verifyToken } from './auth';
 import { streamLogs, injectCommand } from './services/docker';
 
+const PING_INTERVAL_MS = 30000;
+const COMMAND_RATE_LIMIT_MS = 200; // min 200ms between commands
+
 export function attachConsole(server: HttpServer) {
   const wss = new WebSocketServer({ server, path: '/ws/console' });
 
@@ -23,18 +26,41 @@ export function attachConsole(server: HttpServer) {
     }
 
     let logStream: { destroy: () => void } | null = null;
+    let lastCommandAt = 0;
+
+    // Keepalive: detect stale connections that don't respond to pings.
+    let alive = true;
+    const pingTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!alive) {
+        ws.terminate();
+        return;
+      }
+      alive = false;
+      ws.ping();
+    }, PING_INTERVAL_MS);
+    ws.on('pong', () => {
+      alive = true;
+    });
 
     ws.on('message', async (data) => {
       try {
         const cmd = data.toString().trim();
         if (!cmd) return;
+        // Rate-limit command injection to prevent abuse.
+        const now = Date.now();
+        if (now - lastCommandAt < COMMAND_RATE_LIMIT_MS) return;
+        lastCommandAt = now;
         await injectCommand(serverId, cmd);
       } catch (err: any) {
-        ws.send(`[tModVision] Failed to send command: ${err.message}\n`);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(`[tModVision] Failed to send command: ${err.message}\n`);
+        }
       }
     });
 
     ws.on('close', () => {
+      clearInterval(pingTimer);
       if (logStream) logStream.destroy();
     });
 

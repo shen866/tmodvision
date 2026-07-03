@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { listServers, getServerById, getServerPaths } from '../servers';
+import { assertSafeName, assertWithinBase } from '../lib/safe';
 
 export interface ModInfo {
   name: string;
@@ -88,10 +90,12 @@ export async function disableMod(serverId: string, name: string) {
 }
 
 export async function deleteMod(serverId: string, name: string) {
+  assertSafeName(name, 'mod name');
   const server = await resolveServer(serverId);
   const paths = getServerPaths(server);
   await disableMod(serverId, name);
   const filePath = path.join(paths.modsDir, `${name}.tmod`);
+  assertWithinBase(filePath, paths.modsDir);
   await fs.unlink(filePath);
 }
 
@@ -117,28 +121,34 @@ export async function listWorlds(serverId: string): Promise<WorldInfo[]> {
 }
 
 export async function deleteWorld(serverId: string, name: string) {
+  assertSafeName(name, 'world name');
   const server = await resolveServer(serverId);
   const paths = getServerPaths(server);
   const wld = path.join(paths.worldsDir, `${name}.wld`);
   const twld = path.join(paths.worldsDir, `${name}.twld`);
   const twldBak = path.join(paths.worldsDir, `${name}.twld.bak`);
+  assertWithinBase(wld, paths.worldsDir);
   await fs.unlink(wld).catch(() => {});
   await fs.unlink(twld).catch(() => {});
   await fs.unlink(twldBak).catch(() => {});
 }
 
 export async function backupWorld(serverId: string, name: string): Promise<string> {
+  assertSafeName(name, 'world name');
   const server = await resolveServer(serverId);
   const paths = getServerPaths(server);
   const wld = path.join(paths.worldsDir, `${name}.wld`);
   const twld = path.join(paths.worldsDir, `${name}.twld`);
+  assertWithinBase(wld, paths.worldsDir);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupName = `${server.id}-${name}-${timestamp}.zip`;
   const backupPath = path.join(paths.backupsDir, backupName);
+  assertWithinBase(backupPath, paths.backupsDir);
 
-  // Use system zip if available
-  const { execSync } = await import('child_process');
-  execSync(`zip -j "${backupPath}" "${wld}" "${twld}"`, { stdio: 'ignore' });
+  // Use execFileSync (argv array) — no shell, so names cannot inject commands.
+  const { mkdirSync } = await import('fs');
+  mkdirSync(paths.backupsDir, { recursive: true });
+  execFileSync('zip', ['-j', backupPath, wld, twld], { stdio: 'ignore' });
   return backupName;
 }
 
@@ -162,8 +172,14 @@ export async function readServerConfig(serverId: string): Promise<Record<string,
 }
 
 export async function writeServerConfig(serverId: string, values: Record<string, string>) {
-  const server = await resolveServer(serverId);
-  const paths = getServerPaths(server);
+  const paths = getServerPaths(await resolveServer(serverId));
+  await writeServerConfigAt(paths, values);
+}
+
+export async function writeServerConfigAt(
+  paths: ReturnType<typeof getServerPaths>,
+  values: Record<string, string>
+) {
   const lines: string[] = [
     '# tModLoader server configuration',
     '# Managed by tModVision',
@@ -203,6 +219,7 @@ export async function writeServerConfig(serverId: string, values: Record<string,
 }
 
 export async function setActiveWorld(serverId: string, name: string) {
+  assertSafeName(name, 'world name');
   const server = await resolveServer(serverId);
   const paths = getServerPaths(server);
   const config = await readServerConfig(serverId);

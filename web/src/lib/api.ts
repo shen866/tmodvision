@@ -44,6 +44,7 @@ export const api = {
 
   verify: (token: string) =>
     fetch('/api/auth/verify', {
+      method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     }).then((r) => r.ok),
 

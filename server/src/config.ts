@@ -1,7 +1,20 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
-dotenv.config({ path: path.resolve('/app/.env') });
+// Load .env from several candidate locations so both Docker (/app/.env)
+// and local development (project root) work.
+const envCandidates = [
+  '/app/.env',
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), '../.env'),
+];
+for (const p of envCandidates) {
+  if (fs.existsSync(p)) {
+    dotenv.config({ path: p });
+    break;
+  }
+}
 
 export const AUTH_TOKEN = process.env.AUTH_TOKEN || 'changeme';
 export const PORT = Number(process.env.PORT || 3000);

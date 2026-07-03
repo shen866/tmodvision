@@ -18,7 +18,7 @@ RUN npm run build
 
 # Runtime
 FROM node:20-alpine
-RUN apk add --no-cache zip
+RUN apk add --no-cache zip unzip
 WORKDIR /app
 COPY server/package*.json ./
 RUN npm install --production

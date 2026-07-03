@@ -3,6 +3,7 @@ import path from 'path';
 import { listServers, getServerPaths } from '../servers';
 import { readEnabledMods, listInstalledMods } from './files';
 import { WORKSHOP_DIR } from '../config';
+import { assertWorkshopId, assertWithinBase } from '../lib/safe';
 
 export interface DiskUsage {
   serverId: string;
@@ -155,10 +156,12 @@ export async function cleanupSteamMods(workshopIds: string[]): Promise<{ freed: 
 
   let freed = 0;
   for (const id of workshopIds) {
+    assertWorkshopId(id);
     if (!orphanIds.has(id)) {
       throw new Error(`Workshop item ${id} is still in use and cannot be deleted`);
     }
     const dir = path.join(WORKSHOP_DIR, id);
+    assertWithinBase(dir, WORKSHOP_DIR);
     const size = await getDirSize(dir);
     await fs.rm(dir, { recursive: true, force: true });
     freed += size;

@@ -2,6 +2,7 @@ import { Router, Request } from 'express';
 import { getStatus, startServer, stopServer, restartServer } from '../services/docker';
 import { readServerConfig } from '../services/files';
 import { getOnlinePlayers } from '../services/players';
+import { deleteServer } from '../services/create';
 
 const router = Router({ mergeParams: true });
 
@@ -51,6 +52,15 @@ router.get('/players', async (req: Request<{ serverId: string }>, res, next) => 
   try {
     const players = getOnlinePlayers(req.params.serverId);
     res.json({ count: players.length, players });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/', async (req: Request<{ serverId: string }>, res, next) => {
+  try {
+    await deleteServer(req.params.serverId);
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }

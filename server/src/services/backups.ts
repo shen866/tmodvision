@@ -1,9 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { DATA_DIR } from '../config';
 import { listServers, getServerPaths } from '../servers';
 import { readServerConfig } from './files';
+import { assertSafeName, assertWithinBase } from '../lib/safe';
 
 export interface BackupInfo {
   fileName: string;
@@ -51,7 +52,7 @@ export async function listBackups(serverId?: string): Promise<BackupInfo[]> {
       for (const f of files) {
         if (!f.isFile() || !f.name.endsWith('.zip')) continue;
         const stat = await fs.stat(path.join(paths.backupsDir, f.name));
-        const parsed = parseBackupName(f.name);
+        const parsed = parseBackupName(f.name, server.id);
         results.push({
           fileName: f.name,
           serverId: parsed.serverId || server.id,
@@ -68,33 +69,51 @@ export async function listBackups(serverId?: string): Promise<BackupInfo[]> {
   return results.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-function parseBackupName(fileName: string): { serverId: string; worldName: string; createdAt: string } {
+function parseBackupName(
+  fileName: string,
+  knownServerId?: string
+): { serverId: string; worldName: string; createdAt: string } {
   // Expected format: <serverId>-<worldName>-<timestamp>.zip
-  // timestamp: ISO string with : and . replaced by -
+  // timestamp: ISO string with : and . replaced by -, e.g. 2026-07-02T16-24-06-500Z
   const base = fileName.slice(0, -4);
-  const lastDash = base.lastIndexOf('-');
-  if (lastDash === -1) return { serverId: '', worldName: base, createdAt: '' };
 
-  const timestampPart = base.slice(lastDash + 1);
-  const rest = base.slice(0, lastDash);
-  const secondLastDash = rest.lastIndexOf('-');
-  if (secondLastDash === -1) return { serverId: '', worldName: rest, createdAt: timestampPart };
-
-  // timestamp has multiple dashes due to ISO format replacement, so we need to find the actual split
-  // ISO: 2026-07-02T16-24-06-500Z (after replacement)
-  // We match from the end: timestamp ends with Z
+  // Match the timestamp suffix (anchored at end, unambiguous).
   const timestampMatch = base.match(/-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d+Z)$/);
   if (!timestampMatch) return { serverId: '', worldName: base, createdAt: '' };
 
-  const timestamp = timestampMatch[1];
-  const prefix = base.slice(0, -timestamp.length - 1);
-  const firstDash = prefix.indexOf('-');
-  if (firstDash === -1) return { serverId: '', worldName: prefix, createdAt: timestamp };
+  const rawTs = timestampMatch[1];
+  // Reconstruct a valid ISO timestamp: 2026-07-02T16-24-06-500Z → 2026-07-02T16:24:06.500Z
+  const isoTs = rawTs.replace(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z$/,
+    '$1-$2-$3T$4:$5:$6.$7Z'
+  );
+  const createdAt = Number.isNaN(Date.parse(isoTs)) ? '' : isoTs;
 
+  // Remaining prefix is <serverId>-<worldName>.
+  const prefix = base.slice(0, -(rawTs.length + 1));
+
+  // If we know the server ID (listing per-server), strip it directly so that
+  // dashes in either the serverId or worldName don't break the split.
+  if (knownServerId && prefix.startsWith(knownServerId + '-')) {
+    return {
+      serverId: knownServerId,
+      worldName: prefix.slice(knownServerId.length + 1),
+      createdAt,
+    };
+  }
+
+  // Fallback for cross-server listing: split at first dash. serverId is
+  // sanitized to [a-zA-Z0-9_-], so this is only ambiguous when serverId
+  // itself contains a dash — in that case the caller should pass
+  // knownServerId for correctness.
+  const firstDash = prefix.indexOf('-');
+  if (firstDash === -1) {
+    return { serverId: '', worldName: prefix, createdAt };
+  }
   return {
     serverId: prefix.slice(0, firstDash),
     worldName: prefix.slice(firstDash + 1),
-    createdAt: timestamp,
+    createdAt,
   };
 }
 
@@ -104,28 +123,37 @@ export async function createBackup(serverId: string, worldName?: string): Promis
   const paths = getServerPaths(server);
 
   let targetWorld = worldName;
-  if (!targetWorld) {
+  if (targetWorld) {
+    assertSafeName(targetWorld, 'world name');
+  } else {
     const config = await readServerConfig(serverId);
     targetWorld = config.worldname || config.world?.split('/').pop()?.replace('.wld', '') || 'world';
   }
 
   const wld = path.join(paths.worldsDir, `${targetWorld}.wld`);
   const twld = path.join(paths.worldsDir, `${targetWorld}.twld`);
+  assertWithinBase(wld, paths.worldsDir);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupName = `${server.id}-${targetWorld}-${timestamp}.zip`;
   const backupPath = path.join(paths.backupsDir, backupName);
+  assertWithinBase(backupPath, paths.backupsDir);
 
-  execSync(`zip -j "${backupPath}" "${wld}" "${twld}"`, { stdio: 'ignore' });
+  const { mkdirSync } = await import('fs');
+  mkdirSync(paths.backupsDir, { recursive: true });
+  // execFileSync with argv — no shell, so worldName cannot inject commands.
+  execFileSync('zip', ['-j', backupPath, wld, twld], { stdio: 'ignore' });
   return backupName;
 }
 
 export async function restoreBackup(serverId: string, fileName: string): Promise<void> {
+  assertSafeName(fileName, 'backup file name');
   const server = (await listServers()).find((s) => s.id === serverId);
   if (!server) throw new Error(`Server '${serverId}' not found`);
   const paths = getServerPaths(server);
 
   const backupPath = path.join(paths.backupsDir, fileName);
-  const parsed = parseBackupName(fileName);
+  assertWithinBase(backupPath, paths.backupsDir);
+  const parsed = parseBackupName(fileName, server.id);
   const worldName = parsed.worldName;
 
   // Auto-backup current world before restore
@@ -136,9 +164,10 @@ export async function restoreBackup(serverId: string, fileName: string): Promise
   }
 
   const wld = path.join(paths.worldsDir, `${worldName}.wld`);
-  const twld = path.join(paths.worldsDir, `${worldName}.twld`);
+  assertWithinBase(wld, paths.worldsDir);
 
-  execSync(`unzip -o "${backupPath}" -d "${paths.worldsDir}"`, { stdio: 'ignore' });
+  // execFileSync with argv — no shell, so fileName cannot inject commands.
+  execFileSync('unzip', ['-o', backupPath, '-d', paths.worldsDir], { stdio: 'ignore' });
 
   // Ensure restored files have correct names (zip contains worldName.wld and worldName.twld)
   // Update serverconfig.txt to point to restored world
@@ -151,10 +180,13 @@ export async function restoreBackup(serverId: string, fileName: string): Promise
 }
 
 export async function deleteBackup(serverId: string, fileName: string): Promise<void> {
+  assertSafeName(fileName, 'backup file name');
   const server = (await listServers()).find((s) => s.id === serverId);
   if (!server) throw new Error(`Server '${serverId}' not found`);
   const paths = getServerPaths(server);
-  await fs.unlink(path.join(paths.backupsDir, fileName));
+  const backupPath = path.join(paths.backupsDir, fileName);
+  assertWithinBase(backupPath, paths.backupsDir);
+  await fs.unlink(backupPath);
 }
 
 export async function cleanupOldBackups(serverId: string, keepCount: number): Promise<void> {
@@ -167,18 +199,25 @@ export async function cleanupOldBackups(serverId: string, keepCount: number): Pr
   }
 }
 
+let schedulerTimer: NodeJS.Timeout | null = null;
 let schedulerStarted = false;
 
 export async function startAutoBackupScheduler() {
-  if (schedulerStarted) return;
-  schedulerStarted = true;
-
+  // Always (re)read config so runtime changes take effect.
   const config = await loadBackupConfig();
+
+  // Clear any existing timer before (re)scheduling.
+  if (schedulerTimer) {
+    clearInterval(schedulerTimer);
+    schedulerTimer = null;
+  }
+
   if (!config.enabled) return;
 
+  schedulerStarted = true;
   const intervalMs = config.intervalHours * 60 * 60 * 1000;
 
-  setInterval(async () => {
+  schedulerTimer = setInterval(async () => {
     const servers = await listServers();
     for (const server of servers) {
       try {
@@ -189,4 +228,9 @@ export async function startAutoBackupScheduler() {
       }
     }
   }, intervalMs);
+}
+
+/** Re-apply the scheduler after config changes. */
+export async function restartAutoBackupScheduler() {
+  return startAutoBackupScheduler();
 }

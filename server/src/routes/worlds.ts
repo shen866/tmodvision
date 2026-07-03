@@ -22,14 +22,18 @@ router.post('/', async (req: Request<{ serverId: string }>, res, next) => {
   try {
     const { name, size = 2, difficulty = 0, seed } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
-    await createWorld(
+    // World creation can take minutes — run it in the background and
+    // return immediately so the HTTP request doesn't time out.
+    createWorld(
       req.params.serverId,
       name,
       Number(size),
       Number(difficulty),
       seed ? String(seed) : undefined
-    );
-    res.json({ success: true });
+    ).catch((err) => {
+      console.error(`Background world creation failed for ${req.params.serverId}:`, err);
+    });
+    res.json({ success: true, message: '世界创建已在后台开始，请稍后刷新查看' });
   } catch (err) {
     next(err);
   }

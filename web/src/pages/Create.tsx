@@ -10,7 +10,7 @@ import { useServers } from '@/contexts/ServerContext';
 
 export default function Create() {
   const navigate = useNavigate();
-  const { servers } = useServers();
+  const { servers, refreshServers } = useServers();
 
   const [id, setId] = useState('');
   const [name, setName] = useState('');
@@ -56,6 +56,7 @@ export default function Create() {
     setLoading(true);
     try {
       await api.post('/api/servers', body);
+      await refreshServers();
       navigate('/');
     } catch (err: any) {
       setError(err.message || '创建失败');

@@ -17,11 +17,7 @@ function toHostPath(containerPath: string): string {
 export async function getContainer(serverId: string) {
   const server = await getServerById(serverId);
   const containers = await docker.listContainers({ all: true });
-  const info = containers.find(
-    (c) =>
-      c.Names.includes(`/${server.containerName}`) ||
-      c.Id.startsWith(server.containerName)
-  );
+  const info = containers.find((c) => c.Names.includes(`/${server.containerName}`));
   if (!info) return null;
   return docker.getContainer(info.Id);
 }
@@ -67,10 +63,28 @@ export async function injectCommand(serverId: string, command: string) {
   if (!container) throw new Error('Container not found');
   const exec = await container.exec({
     Cmd: ['inject', command],
-    AttachStdout: false,
-    AttachStderr: false,
+    AttachStdout: true,
+    AttachStderr: true,
   });
-  await exec.start({});
+  const stream = await exec.start({});
+
+  // Drain the stream and wait for completion so failures surface to the caller.
+  await new Promise<void>((resolve, reject) => {
+    stream.on('data', () => {});
+    stream.on('error', reject);
+    stream.on('end', async () => {
+      try {
+        const inspectInfo = await exec.inspect();
+        if (inspectInfo.ExitCode !== 0) {
+          reject(new Error(`inject exited with code ${inspectInfo.ExitCode}`));
+        } else {
+          resolve();
+        }
+      } catch {
+        resolve();
+      }
+    });
+  });
 }
 
 export async function streamLogs(
@@ -87,10 +101,11 @@ export async function streamLogs(
     tail: 200,
     timestamps: false,
   });
+  // Buffer incomplete frames across data events — Docker may split a
+  // multiplexed frame at arbitrary boundaries.
+  const parser = createDockerLogParser();
   stream.on('data', (chunk: Buffer) => {
-    // Docker multiplexes stdout/stderr; strip the 8-byte header per frame
-    const lines = parseDockerLog(chunk);
-    for (const line of lines) onData(line);
+    for (const line of parser.push(chunk)) onData(line);
   });
   stream.on('error', onError);
   return {
@@ -104,17 +119,34 @@ export async function streamLogs(
   };
 }
 
+/**
+ * Stateful parser that buffers partial Docker multiplexed frames.
+ * Each frame: 1 byte stream type, 3 zero bytes, 4-byte big-endian size, then payload.
+ */
+export function createDockerLogParser() {
+  let buf = Buffer.alloc(0);
+  return {
+    push(chunk: Buffer): string[] {
+      buf = Buffer.concat([buf, chunk]);
+      const lines: string[] = [];
+      while (buf.length >= 8) {
+        const size = buf.readUInt32BE(4);
+        if (buf.length < 8 + size) break; // incomplete frame, wait for more
+        const payload = buf.slice(8, 8 + size).toString('utf-8');
+        lines.push(payload);
+        buf = buf.slice(8 + size);
+      }
+      return lines;
+    },
+  };
+}
+
+/**
+ * Parse a complete, already-buffered Docker log frame buffer.
+ * Kept for callers (e.g. players.ts) that read logs in one shot.
+ */
 export function parseDockerLog(buffer: Buffer): string[] {
-  const lines: string[] = [];
-  let offset = 0;
-  while (offset < buffer.length) {
-    // header: stream type (1), 0, 0, 0, size (4)
-    const size = buffer.readUInt32BE(offset + 4);
-    const payload = buffer.slice(offset + 8, offset + 8 + size).toString('utf-8');
-    lines.push(payload);
-    offset += 8 + size;
-  }
-  return lines;
+  return createDockerLogParser().push(buffer);
 }
 
 export async function runSteamCmd(serverId: string, workshopId: string): Promise<void> {
@@ -193,37 +225,66 @@ export async function createWorld(
     name: `tmodvision-worldcreate-${server.id}-${Date.now()}`,
   });
 
-  await container.start();
+  try {
+    await container.start();
 
-  // Wait for world file to appear, then stop the container
-  const maxWait = 1000 * 60 * 5; // 5 minutes
-  const start = Date.now();
-  const fs = await import('fs/promises');
-  while (Date.now() - start < maxWait) {
-    await new Promise((r) => setTimeout(r, 2000));
-    try {
-      await fs.access(worldPath);
-      // Also wait for .twld
+    // Wait for world files to appear. Also bail early if the container exits
+    // before producing them (e.g. script crash), so we don't block for the
+    // full timeout on an already-failed run.
+    const maxWait = 1000 * 60 * 5; // 5 minutes
+    const start = Date.now();
+    const fs = await import('fs/promises');
+    const twldPath = path.join(paths.worldsDir, `${name}.twld`);
+    while (Date.now() - start < maxWait) {
+      await new Promise((r) => setTimeout(r, 2000));
+
       try {
-        await fs.access(path.join(paths.worldsDir, `${name}.twld`));
+        await fs.access(worldPath);
+        await fs.access(twldPath);
+        break; // both world files exist — done
       } catch {
-        continue;
+        // not ready yet
       }
-      break;
+
+      const info = await container.inspect();
+      if (!info.State.Running) {
+        throw new Error('世界创建容器已退出，但世界文件未生成（可能脚本执行失败）');
+      }
+    }
+  } finally {
+    try {
+      await container.stop({ t: 10 });
     } catch {
-      // continue
+      // ignore
+    }
+    try {
+      await container.remove({ force: true });
+    } catch {
+      // ignore
     }
   }
+}
 
-  try {
-    await container.stop({ t: 10 });
-  } catch {
-    // ignore
-  }
-  try {
-    await container.remove({ force: true });
-  } catch {
-    // ignore
+/**
+ * Remove any orphaned world-creation containers left behind by a crashed or
+ * restarted server process. Called once at startup.
+ */
+export async function cleanupOrphanedWorldCreators(): Promise<void> {
+  const containers = await docker.listContainers({ all: true });
+  for (const c of containers) {
+    if (!c.Names.some((n) => n.includes('tmodvision-worldcreate-'))) continue;
+    const container = docker.getContainer(c.Id);
+    try {
+      await container.stop({ t: 5 });
+    } catch {
+      // ignore
+    }
+    try {
+      await container.remove({ force: true });
+    } catch {
+      // ignore
+    }
+    console.log(`Cleaned up orphaned world-creation container: ${c.Names.join(', ')}`);
   }
 }
 

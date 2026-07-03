@@ -8,8 +8,9 @@ import {
   getServerPaths,
   SERVERS_JSON_PATH,
 } from '../servers';
-import { createWorld } from './docker';
-import { writeServerConfig } from './files';
+import { createWorld, getContainer, docker } from './docker';
+import { writeServerConfigAt } from './files';
+import { resolveSubPath, assertWithinBase } from '../lib/safe';
 
 export interface CreateServerInput {
   id: string;
@@ -39,8 +40,9 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
     throw new Error(`Server '${id}' already exists`);
   }
 
-  const dataDir = path.resolve(DATA_DIR, input.dataDir || `./tModLoader-${id}`);
-  const composeDir = path.resolve(DATA_DIR, input.composeDir || `./servers/${id}`);
+  // Resolve dataDir/composeDir safely — only relative paths inside DATA_DIR.
+  const dataDir = resolveSubPath(DATA_DIR, input.dataDir, `./tModLoader-${id}`);
+  const composeDir = resolveSubPath(DATA_DIR, input.composeDir, `./servers/${id}`);
   const containerName = `tmodloader-${id}`;
 
   const server: ServerConfig = {
@@ -52,12 +54,8 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
     port: Number(input.port) || 7777,
   };
 
-  // Register early so downstream helpers (copyModsPreset / createWorld) can resolve this server
-  servers.push(server);
-  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
-  invalidateServersCache();
-
-  // Create directory structure
+  // Build everything on disk BEFORE registering, so a failure leaves no
+  // half-created entry in servers.json.
   const paths = getServerPaths(server);
   await fs.mkdir(paths.modsDir, { recursive: true });
   await fs.mkdir(paths.worldsDir, { recursive: true });
@@ -77,7 +75,7 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
   // Generate serverconfig.txt
   const worldName = input.world?.name || `${id}-world`;
   const worldPath = path.join(paths.worldsDir, `${worldName}.wld`);
-  await writeServerConfig(id, {
+  await writeServerConfigAt(paths, {
     world: worldPath,
     worldpath: paths.worldsDir + '/',
     worldname: worldName,
@@ -101,27 +99,82 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
 
   // Copy mods preset if specified
   if (input.copyModsFrom) {
-    await copyModsPreset(input.copyModsFrom, id);
+    await copyModsPreset(input.copyModsFrom, server);
   }
 
-  // Create world if parameters provided
+  // Register the server now that the filesystem is ready.
+  servers.push(server);
+  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
+  invalidateServersCache();
+
+  // Create world in the background — it can take minutes and should not
+  // block the HTTP response. Errors are logged, not thrown.
   if (input.world?.name) {
-    await createWorld(
+    createWorld(
       id,
       input.world.name,
       Number(input.world.size) || 2,
       Number(input.world.difficulty) || 0,
       input.world.seed
-    );
+    ).catch((err) => {
+      console.error(`Background world creation failed for ${id}:`, err);
+    });
   }
 
   return server;
 }
 
-async function copyModsPreset(fromServerId: string, toServerId: string) {
+/**
+ * Remove a server and everything it created: the server container, any
+ * leftover world-creation containers, its data and compose directories, and
+ * its servers.json entry. Nothing per-server is left behind.
+ */
+export async function deleteServer(serverId: string): Promise<void> {
+  const servers = await loadServers();
+  const server = servers.find((s) => s.id === serverId);
+  if (!server) throw new Error(`Server '${serverId}' not found`);
+
+  // Stop and remove the server container.
+  try {
+    const container = await getContainer(serverId);
+    if (container) {
+      try { await container.stop({ t: 10 }); } catch { /* ignore */ }
+      try { await container.remove({ force: true }); } catch { /* ignore */ }
+    }
+  } catch {
+    // Container lookup failed — continue with the rest of the cleanup.
+  }
+
+  // Also remove any leftover world-creation containers for this server.
+  try {
+    const containers = await docker.listContainers({ all: true });
+    const prefix = `tmodvision-worldcreate-${serverId}-`;
+    for (const c of containers) {
+      if (!c.Names.some((n) => n.replace(/^\//, '').startsWith(prefix))) continue;
+      const container = docker.getContainer(c.Id);
+      try { await container.stop({ t: 5 }); } catch { /* ignore */ }
+      try { await container.remove({ force: true }); } catch { /* ignore */ }
+    }
+  } catch {
+    // ignore
+  }
+
+  // Remove server data and compose directories. Safety: only delete paths
+  // that live inside DATA_DIR.
+  assertWithinBase(server.dataDir, DATA_DIR);
+  assertWithinBase(server.composeDir, DATA_DIR);
+  await fs.rm(server.dataDir, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(server.composeDir, { recursive: true, force: true }).catch(() => {});
+
+  // Unregister from servers.json.
+  const remaining = servers.filter((s) => s.id !== serverId);
+  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(remaining, null, 2));
+  invalidateServersCache();
+}
+
+async function copyModsPreset(fromServerId: string, toServer: ServerConfig) {
   const { getServerById } = await import('../servers');
   const fromServer = await getServerById(fromServerId);
-  const toServer = await getServerById(toServerId);
   const fromPaths = getServerPaths(fromServer);
   const toPaths = getServerPaths(toServer);
 

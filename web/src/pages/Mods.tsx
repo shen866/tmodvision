@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { formatBytes } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -20,14 +21,6 @@ interface WorkshopResult {
   title: string;
   description: string;
   previewUrl?: string;
-}
-
-function formatBytes(bytes: number) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 export default function ModsPage() {
@@ -99,10 +92,11 @@ export default function ModsPage() {
   };
 
   const search = async () => {
+    if (!serverApi) return;
     setSearching(true);
     setSearchError('');
     try {
-      const data = await api.get(`/api/mods/workshop/search?q=${encodeURIComponent(query)}`);
+      const data = await serverApi.get(`/mods/workshop/search?q=${encodeURIComponent(query)}`);
       setResults(data);
     } catch (e: any) {
       setSearchError(e.message || '搜索失败');

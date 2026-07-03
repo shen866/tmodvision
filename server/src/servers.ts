@@ -18,19 +18,23 @@ export interface ServerConfig {
 
 export const SERVERS_JSON_PATH = path.join(DATA_DIR, 'servers.json');
 
+const CACHE_TTL_MS = 5000; // re-read at most every 5s so external edits are picked up
 let cachedServers: ServerConfig[] | null = null;
+let cachedAt = 0;
 
 export async function loadServers(): Promise<ServerConfig[]> {
-  if (cachedServers) return cachedServers;
+  if (cachedServers && Date.now() - cachedAt < CACHE_TTL_MS) return cachedServers;
 
   try {
     const raw = await fs.readFile(SERVERS_JSON_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as ServerConfig[];
     cachedServers = parsed.map(normalizeServer);
+    cachedAt = Date.now();
     return cachedServers;
   } catch {
     // No servers.json yet: user must create servers through the panel
     cachedServers = [];
+    cachedAt = Date.now();
     return cachedServers;
   }
 }

@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useServers } from '@/contexts/ServerContext';
 
 export default function ServerPage() {
   const { serverId } = useParams<{ serverId: string }>();
-  const { servers } = useServers();
+  const { servers, refreshServers } = useServers();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<any>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const server = servers.find((s) => s.id === serverId);
 
@@ -41,6 +45,21 @@ export default function ServerPage() {
       await fetchStatus();
     } finally {
       setter(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!serverId) return;
+    setDeleting(true);
+    try {
+      await api.forServer(serverId).del('/');
+      await refreshServers();
+      navigate('/');
+    } catch (err: any) {
+      alert(err.message || '删除失败');
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
     }
   };
 
@@ -173,6 +192,35 @@ export default function ServerPage() {
           </CardContent>
         </Card>
       )}
+
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-destructive">危险区域</CardTitle>
+          <CardDescription>删除服务器会移除容器、世界、模组、配置等所有相关数据</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
+            删除服务器
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogHeader>
+          <DialogTitle>确认删除服务器</DialogTitle>
+          <DialogDescription>
+            确定要删除服务器「{server.name}」吗？此操作将停止并移除容器，并永久删除其世界、模组、配置等所有数据，且不可恢复。
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleting}>
+            取消
+          </Button>
+          <Button variant="destructive" onClick={handleDelete} loading={deleting} disabled={deleting}>
+            删除
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }
