@@ -8,7 +8,7 @@ import {
   getServerPaths,
   SERVERS_JSON_PATH,
 } from '../servers';
-import { createWorld, getContainer, docker } from './docker';
+import { createWorld, getContainer, docker, createAndStartServerContainer } from './docker';
 import { writeServerConfigAt } from './files';
 import { resolveSubPath, assertWithinBase } from '../lib/safe';
 
@@ -106,6 +106,12 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
   servers.push(server);
   await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
   invalidateServersCache();
+
+  // Create and start the container in the background — building the image can
+  // take several minutes so don't block the HTTP response.
+  createAndStartServerContainer(id).catch((err) => {
+    console.error(`Container start failed for ${id}:`, err);
+  });
 
   // Create world in the background — it can take minutes and should not
   // block the HTTP response. Errors are logged, not thrown.

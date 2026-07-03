@@ -1,5 +1,7 @@
 import Docker from 'dockerode';
 import path from 'path';
+import { execFileSync } from 'child_process';
+import { Readable } from 'stream';
 import { DATA_DIR, HOST_DATA_DIR } from '../config';
 import { getServerById, getServerPaths } from '../servers';
 
@@ -42,7 +44,10 @@ export async function getStatus(serverId: string) {
 
 export async function startServer(serverId: string) {
   const container = await getContainer(serverId);
-  if (!container) throw new Error('Container not found');
+  if (!container) {
+    // Container doesn't exist yet — create and start it
+    return createAndStartServerContainer(serverId);
+  }
   await container.start();
 }
 
@@ -56,6 +61,82 @@ export async function restartServer(serverId: string) {
   const container = await getContainer(serverId);
   if (!container) throw new Error('Container not found');
   await container.restart({ t: 30 });
+}
+
+/**
+ * Build the tmodloader image and create + start the container for a server.
+ * Idempotent — if the container already exists, just start it.
+ */
+export async function createAndStartServerContainer(serverId: string): Promise<void> {
+  const server = await getServerById(serverId);
+
+  // If container already exists, just start it
+  const existing = await getContainer(serverId);
+  if (existing) {
+    const info = await existing.inspect();
+    if (!info.State.Running) {
+      await existing.start();
+    }
+    return;
+  }
+
+  const buildContextDir = path.join(server.composeDir, 'tmodloader');
+  const imageTag = `tmodvision-tmodloader:${serverId}`;
+
+  // Build the image from the tmodloader directory
+  console.log(`[docker] Building image ${imageTag} from ${buildContextDir}...`);
+  const tarBuffer = execFileSync('tar', ['-c', '-C', buildContextDir, '.'], {
+    maxBuffer: 1024 * 1024 * 100, // 100MB
+  });
+  const buildStream = await docker.buildImage(Readable.from(tarBuffer), {
+    t: imageTag,
+    buildargs: { TMOD_VERSION: process.env.TMOD_VERSION || 'v2026.04.3.0' },
+  });
+  // Wait for build to finish
+  await new Promise<void>((resolve, reject) => {
+    docker.modem.followProgress(buildStream, (err) => (err ? reject(err) : resolve()));
+  });
+  console.log(`[docker] Image ${imageTag} built successfully`);
+
+  // Create the container
+  const container = await docker.createContainer({
+    Image: imageTag,
+    name: server.containerName,
+    Hostname: '',
+    Domainname: '',
+    User: '',
+    AttachStdin: false,
+    AttachStdout: false,
+    AttachStderr: false,
+    Tty: true,
+    OpenStdin: true,
+    StdinOnce: false,
+    Env: [
+      'TMOD_SHUTDOWN_MESSAGE=Server is shutting down NOW!',
+      'TMOD_AUTOSAVE_INTERVAL=10',
+      `TMOD_MOTD=Welcome to ${server.name}`,
+      'TMOD_PASS=',
+      'TMOD_MAXPLAYERS=8',
+      'TMOD_WORLDSIZE=2',
+      'TMOD_WORLDSEED=',
+      'TMOD_DIFFICULTY=0',
+      'TMOD_SECURE=0',
+      'TMOD_LANGUAGE=en-US',
+      'TMOD_NPCSTREAM=60',
+      'TMOD_UPNP=0',
+      'TMOD_PORT=7777',
+    ],
+    ExposedPorts: { '7777/tcp': {} },
+    HostConfig: {
+      PortBindings: { '7777/tcp': [{ HostPort: String(server.port) }] },
+      Binds: [`${toHostPath(server.dataDir)}:/data`],
+      RestartPolicy: { Name: 'unless-stopped' },
+    },
+  });
+
+  console.log(`[docker] Container ${server.containerName} created, starting...`);
+  await container.start();
+  console.log(`[docker] Container ${server.containerName} started`);
 }
 
 export async function injectCommand(serverId: string, command: string) {
