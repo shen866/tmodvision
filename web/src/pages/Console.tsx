@@ -23,7 +23,7 @@ export default function ConsolePage() {
     ws.onopen = () => setConnected(true);
     ws.onclose = () => setConnected(false);
     ws.onmessage = (event) => {
-      setLogs((prev) => [...prev, event.data]);
+      setLogs((prev) => [...prev.slice(-1499), event.data]);
     };
     ws.onerror = () => setConnected(false);
 
@@ -38,13 +38,13 @@ export default function ConsolePage() {
 
   const send = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!command.trim() || !wsRef.current) return;
+    if (!command.trim() || wsRef.current?.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(command);
     setCommand('');
   };
 
   const sendRaw = (cmd: string) => {
-    if (!wsRef.current) return;
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(cmd);
   };
 
@@ -63,25 +63,25 @@ export default function ConsolePage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="secondary" onClick={() => sendRaw('save')}>
+        <Button disabled={!connected} size="sm" variant="secondary" onClick={() => sendRaw('save')}>
           保存世界
         </Button>
-        <Button size="sm" variant="secondary" onClick={broadcast}>
+        <Button disabled={!connected} size="sm" variant="secondary" onClick={broadcast}>
           广播消息
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => sendRaw('playing')}>
+        <Button disabled={!connected} size="sm" variant="secondary" onClick={() => sendRaw('playing')}>
           在线玩家
         </Button>
-        <Button size="sm" variant="outline" onClick={() => sendRaw('dawn')}>
+        <Button disabled={!connected} size="sm" variant="outline" onClick={() => sendRaw('dawn')}>
           黎明
         </Button>
-        <Button size="sm" variant="outline" onClick={() => sendRaw('noon')}>
+        <Button disabled={!connected} size="sm" variant="outline" onClick={() => sendRaw('noon')}>
           正午
         </Button>
-        <Button size="sm" variant="outline" onClick={() => sendRaw('dusk')}>
+        <Button disabled={!connected} size="sm" variant="outline" onClick={() => sendRaw('dusk')}>
           黄昏
         </Button>
-        <Button size="sm" variant="outline" onClick={() => sendRaw('midnight')}>
+        <Button disabled={!connected} size="sm" variant="outline" onClick={() => sendRaw('midnight')}>
           午夜
         </Button>
       </div>

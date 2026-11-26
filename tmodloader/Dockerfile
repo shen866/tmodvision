@@ -2,7 +2,7 @@
 # Downloads the official tModLoader release from GitHub and runs inside tmux,
 # so commands can be injected via `docker exec <container> inject <cmd>`.
 
-FROM steamcmd/steamcmd:ubuntu-22 as builder
+FROM steamcmd/steamcmd:ubuntu-22 AS builder
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl tar \
@@ -63,7 +63,7 @@ WORKDIR /terraria-server
 RUN steamcmd /terraria-server +login anonymous +quit || true
 
 # Use a locally provided tModLoader archive when available, otherwise download from GitHub.
-COPY tModLoader.zip* ./
+COPY prepare-config.sh tModLoader.zip* ./
 RUN if [ -f tModLoader.zip ]; then \
       echo "Using local tModLoader.zip"; \
     else \
@@ -79,10 +79,10 @@ RUN if [ -f tModLoader.zip ]; then \
  && rm tModLoader.zip
 
 # Install bundled .NET runtime needed by tModLoader
-COPY DotNetInstall.sh ./LaunchUtils/DotNetInstall.sh
+COPY DotNetInstall.sh /tmp/tmodvision-install-runtime.sh
 RUN chmod 755 ./LaunchUtils/*.sh \
  && chmod 755 ./start-tModLoaderServer.sh \
- && ./LaunchUtils/DotNetInstall.sh
+ && bash /tmp/tmodvision-install-runtime.sh
 
 COPY entrypoint.sh .
 COPY inject.sh /usr/local/bin/inject
@@ -94,6 +94,7 @@ RUN chmod 755 ./entrypoint.sh \
  && chmod 755 ./prepare-config.sh \
  && chmod 755 ./autosave.sh
 
+LABEL io.tmodvision.world-entrypoint="1"
 EXPOSE 7777
 
 ENTRYPOINT ["./entrypoint.sh"]

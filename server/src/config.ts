@@ -16,7 +16,10 @@ for (const p of envCandidates) {
   }
 }
 
-export const AUTH_TOKEN = process.env.AUTH_TOKEN || 'changeme';
+export const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
+if (!AUTH_TOKEN.trim() || ['changeme','your-secure-token-here'].includes(AUTH_TOKEN)) {
+  throw new Error('请通过 ./tmodvision start 设置管理员 Token');
+}
 export const PORT = Number(process.env.PORT || 3000);
 export const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
 export const TMOD_CONTAINER_NAME = process.env.TMOD_CONTAINER_NAME || 'tmodloader';

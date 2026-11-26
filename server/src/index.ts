@@ -1,10 +1,9 @@
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
-import { authMiddleware } from './auth';
+import { authMiddleware, login, logout } from './auth';
 import { PORT } from './config';
 import { ensureDirs } from './services/files';
-import { cleanupOrphanedWorldCreators } from './services/docker';
+import { cleanupOrphanedWorldCreators, operation } from './services/docker';
 import { attachConsole } from './ws-console';
 import { listServers } from './servers';
 import { startAutoBackupScheduler } from './services/backups';
@@ -23,11 +22,15 @@ async function main() {
   await cleanupOrphanedWorldCreators();
 
   const app = express();
-  app.use(cors());
+  app.disable('x-powered-by');
   app.use(express.json());
 
   // Health check
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+
+  app.post('/api/auth/login', login);
+  app.get('/api/auth/session', authMiddleware, (_req,res) => res.json({ valid:true }));
+  app.post('/api/auth/logout', authMiddleware, logout);
 
   // Auth verification
   app.post('/api/auth/verify', authMiddleware, (_req, res) => res.json({ valid: true }));
@@ -45,6 +48,16 @@ async function main() {
 
   // Per-server API routes
   const serverRouter = express.Router({ mergeParams: true });
+  const writes = new Set<string>();
+  serverRouter.use((req, res, next) => {
+    const id = (req.params as {serverId: string}).serverId;
+    if (req.method === 'GET') return next();
+    if (writes.has(id) || operation(id).activity) return res.status(409).json({error: '此服正在执行其他操作，请稍后重试'});
+    writes.add(id);
+    res.once('finish', () => writes.delete(id));
+    res.once('close', () => writes.delete(id));
+    next();
+  });
   serverRouter.use('/mods', modsRoutes);
   serverRouter.use('/worlds', worldsRoutes);
   serverRouter.use('/config', configRoutes);

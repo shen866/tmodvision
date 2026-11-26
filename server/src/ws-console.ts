@@ -1,7 +1,7 @@
 import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
-import { verifyToken } from './auth';
+import { sameOrigin, hasSession, verifyToken } from './auth';
 import { streamLogs, injectCommand } from './services/docker';
 
 const PING_INTERVAL_MS = 30000;
@@ -11,11 +11,12 @@ export function attachConsole(server: HttpServer) {
   const wss = new WebSocketServer({ server, path: '/ws/console' });
 
   wss.on('connection', async (ws, req) => {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const token = url.searchParams.get('token') || '';
+    const url = new URL(req.url || '/', 'http://localhost');
+    const bearer = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] || '';
+    const apiClient = !req.headers.origin && verifyToken(bearer);
     const serverId = url.searchParams.get('serverId') || '';
 
-    if (!verifyToken(token)) {
+    if (!apiClient && !(sameOrigin(req) && hasSession(req))) {
       ws.close(1008, 'Unauthorized');
       return;
     }
@@ -32,6 +33,7 @@ export function attachConsole(server: HttpServer) {
     let alive = true;
     const pingTimer = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
+      if (!apiClient && !hasSession(req)) return ws.close(1008, 'Session expired');
       if (!alive) {
         ws.terminate();
         return;
@@ -45,6 +47,7 @@ export function attachConsole(server: HttpServer) {
 
     ws.on('message', async (data) => {
       try {
+        if (!apiClient && !hasSession(req)) return ws.close(1008, 'Session expired');
         const cmd = data.toString().trim();
         if (!cmd) return;
         // Rate-limit command injection to prevent abuse.
@@ -78,6 +81,7 @@ export function attachConsole(server: HttpServer) {
           }
         }
       );
+      if (ws.readyState !== WebSocket.OPEN) logStream.destroy();
     } catch (err: any) {
       ws.send(`[tModVision] Unable to attach to server logs: ${err.message}\n`);
     }

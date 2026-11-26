@@ -1,7 +1,12 @@
 import { Router } from 'express';
+import { releaseList } from '../services/releases';
 import { createServer } from '../services/create';
 
 const router = Router();
+
+router.get('/versions', async (_req, res, next) => {
+  try { res.json(await releaseList()); } catch (err) { next(err); }
+});
 
 router.post('/', async (req, res, next) => {
   try {
@@ -21,6 +26,7 @@ router.post('/', async (req, res, next) => {
       id,
       name,
       port: Number(port),
+      version: req.body.version,
       dataDir,
       composeDir,
       copyModsFrom,

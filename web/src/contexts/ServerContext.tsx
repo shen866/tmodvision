@@ -8,10 +8,13 @@ interface Server {
   composeDir: string;
   dataDir: string;
   port: number;
+  version?: string;
 }
 
 interface ServerContextValue {
   servers: Server[];
+  loading: boolean;
+  error: string;
   currentServerId: string | null;
   setCurrentServerId: (id: string) => void;
   currentServer: Server | null;
@@ -22,19 +25,18 @@ const ServerContext = createContext<ServerContextValue | null>(null);
 
 export function ServerProvider({ children }: { children: React.ReactNode }) {
   const params = useParams<{ serverId?: string }>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [servers, setServers] = useState<Server[]>([]);
   const [currentServerId, setCurrentServerId] = useState<string | null>(null);
 
   const refreshServers = useCallback(async () => {
     try {
-      const res = await fetch('/api/servers', {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('tmodvision_token') || ''}`,
-        },
-      });
+      const res = await fetch('/api/servers');
       if (!res.ok) throw new Error('Failed to fetch servers');
       const data = await res.json();
       setServers(data);
+      setError('');
       // If URL has serverId, sync current selection
       if (params.serverId) {
         setCurrentServerId(params.serverId);
@@ -42,7 +44,9 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
         setCurrentServerId(data[0].id);
       }
     } catch (err) {
-      console.error(err);
+      setError('服务器列表读取失败');
+    } finally {
+      setLoading(false);
     }
   }, [params.serverId, currentServerId]);
 
@@ -61,7 +65,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
   return (
     <ServerContext.Provider
       value={{
-        servers,
+        servers, loading, error,
         currentServerId,
         setCurrentServerId,
         currentServer,

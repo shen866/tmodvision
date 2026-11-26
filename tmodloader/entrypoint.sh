@@ -1,6 +1,15 @@
 #!/bin/bash
 set -e
 
+# MonoMod startup on Apple's x86 Linux translator requires this .NET JIT mode.
+if [[ $(readlink /proc/1/exe) == */rosetta ]]; then
+  export DOTNET_EnableWriteXorExecute=${DOTNET_EnableWriteXorExecute:-0}
+fi
+if [[ ${1:-} == --create-world ]]; then
+  shift
+  exec /terraria-server/LaunchUtils/ScriptCaller.sh "$@"
+fi
+
 pipe=/tmp/tmod.pipe
 configPath=/terraria-server/serverconfig.txt
 

@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""tModVision cloud deployment CLI. Python standard library + Docker Compose."""
+import argparse
+import fcntl
+import errno
+import getpass
+import hashlib
+import http.client
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent
+STATE = ROOT / ".tmodvision"
+ACTIVE = STATE / "deployment.json"
+PENDING = STATE / "pending.json"
+SITE = STATE / "nginx" / "default.conf"
+BAD_TOKENS = {"changeme", "your-secure-token-here"}
+
+
+class Problem(Exception):
+    pass
+
+
+def run(args, *, capture=False, check=True, env=None, stdin=None):
+    result = subprocess.run(args, cwd=ROOT, env=env, input=stdin, text=True,
+                            stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.PIPE if capture else None)
+    if check and result.returncode:
+        raise Problem((result.stderr or "").strip() or "命令执行失败，请查看上方输出")
+    return result
+
+
+def atomic(file, text, mode=0o600):
+    file.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=file.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, file)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def save(file, config):
+    atomic(file, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+
+
+def read(file):
+    return json.loads(file.read_text()) if file.exists() else None
+
+
+def usable(token):
+    return bool(token) and token == token.strip() and token not in BAD_TOKENS and not any(c in token for c in "\r\n\0")
+
+
+def compose(cfg, *args, **kwargs):
+    env = {**os.environ, "AUTH_TOKEN": cfg["token"], "HOST_DATA_DIR": cfg["data"],
+           "PANEL_CERT_NAME": cert_name(cfg)}
+    return run(["docker", "compose", "-p", cfg["project"], "-f", str(ROOT / "docker-compose.yml"), *args],
+               env=env, **kwargs)
+
+
+def host_check():
+    if not shutil.which("docker"):
+        raise Problem("未找到 Docker，请安装 Docker Engine 和 Compose 插件")
+    run(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
+    run(["docker", "compose", "version"], capture=True)
+
+
+def inventory():
+    # Use Compose's own dotenv parser, including quotes, comments and interpolation.
+    probe = "services:\n  probe:\n    image: scratch\n    environment:\n      - AUTH_TOKEN\n      - HOST_DATA_DIR\n"
+    spec = json.loads(run(["docker", "compose", "-f", "-", "config", "--format", "json"],
+                          stdin=probe, capture=True).stdout)
+    settings = spec["services"]["probe"]["environment"]
+    project = spec["name"]
+    token = settings.get("AUTH_TOKEN") or ""
+    configured = settings.get("HOST_DATA_DIR")
+    data = Path(configured).expanduser().resolve() if configured else ROOT / "data"
+    existing = run(["docker", "container", "ls", "-a", "--filter", "name=^/tmodvision$", "--format", "{{.ID}}"], capture=True).stdout.strip()
+    if existing:
+        info = json.loads(run(["docker", "inspect", existing], capture=True).stdout)[0]
+        labels = info["Config"].get("Labels") or {}
+        if labels.get("com.docker.compose.service") != "tmodvision":
+            raise Problem("容器名 tmodvision 已由其他服务使用，请先确认该容器的归属")
+        project = labels["com.docker.compose.project"]
+        mounts = [m for m in info["Mounts"] if m["Destination"] == "/data"]
+        if not mounts or mounts[0]["Type"] != "bind":
+            raise Problem("已有面板使用非目录数据卷，请先确认数据迁移方案")
+        data = Path(mounts[0]["Source"])
+        if configured and Path(configured).resolve() != data.resolve():
+            print("现有 HOST_DATA_DIR 与面板实际挂载不同。采用实际挂载：", data)
+        old_env = dict(v.split("=", 1) for v in info["Config"]["Env"] if "=" in v)
+        token = old_env.get("AUTH_TOKEN") or token
+    return {"project": project, "data": str(data), "token": token}, bool(existing)
+
+
+def addresses():
+    values = set()
+    if shutil.which("ip"):
+        result = run(["ip", "-j", "address"], capture=True, check=False)
+        if result.returncode == 0:
+            for interface in json.loads(result.stdout):
+                values.update(a["local"] for a in interface.get("addr_info", []))
+    elif shutil.which("ifconfig"):
+        output = run(["ifconfig"], capture=True, check=False).stdout
+        values.update(re.findall(r"\binet6?\s+([0-9a-fA-F:.]+)", output))
+    return sorted(v for v in values if not (ipaddress.ip_address(v).is_loopback or ipaddress.ip_address(v).is_link_local))
+
+
+def endpoint(value, mode):
+    if mode == "ip":
+        addr = ipaddress.ip_address(value)
+        if not addr.is_global or addr.is_multicast or "%" in value:
+            raise ValueError("请填写云服务商分配的公网单播地址")
+        return str(addr)
+    name = value.rstrip(".").encode("idna").decode().lower()
+    if (len(name) > 253 or "." not in name or name.rsplit(".", 1)[1].isdigit() or
+        not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", s) for s in name.split("."))):
+        raise ValueError("请输入完整域名，例如 panel.example.com")
+    return name
+
+
+def dns(host):
+    return sorted({entry[4][0] for entry in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)})
+
+
+def prompt(label, default=""):
+    answer = input(label + (f" [{default}]" if default else "") + "：").strip()
+    return answer or default
+
+
+def choice(label, options, default=1):
+    print("\n" + label)
+    for i, text in enumerate(options, 1):
+        print(f"  {i}. {text}")
+    while True:
+        answer = prompt("选择", str(default))
+        if answer in map(str, range(1, len(options) + 1)):
+            return int(answer)
+        print("请输入选项编号")
+
+
+def networks(raw):
+    if "%" in raw:
+        raise ValueError("请使用无需接口标识的管理网段")
+    values = [str(ipaddress.ip_network(v.strip(), strict=False)) for v in raw.split(",")]
+    return list(dict.fromkeys(values))
+
+
+def origin(cfg):
+    host = cfg["host"]
+    return "https://" + ("[" + host + "]" if ":" in host else host)
+
+
+def registry(path):
+    file = Path(path) / "servers.json"
+    if not file.exists():
+        return None
+    try:
+        records = json.loads(file.read_text())
+    except ValueError as err:
+        raise Problem(f"{file} 无法解析，请检查原文件") from err
+    if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
+        raise Problem(f"{path}/servers.json 格式异常，请检查原文件")
+    return len(records)
+
+
+def wizard(current, mounted):
+    print(f"\ntModVision 部署设置\n主机名  {socket.gethostname()}\n项目目录  {ROOT}\nDocker / Compose  已就绪")
+    print("本机网卡地址  " + ("、".join(addresses()) or "未检测到"))
+    default_dir = Path(current["data"])
+    count = registry(default_dir)
+    print(f"数据目录  {default_dir}" + (f"（已有 {count} 台服务器）" if count is not None else ""))
+    print("已有部署  " + ("已保存 CLI 配置" if ACTIVE.exists() else "检测到面板容器" if mounted else
+                       "检测到服务器清单" if count is not None else "检测到 .env" if (ROOT / ".env").exists() else "未检测到"))
+    cfg = dict(current)
+    generated = False
+    while True:
+        mode = choice("面板使用哪种公网地址？", ["公网 IP", "域名"], 2 if cfg.get("mode") == "domain" else 1)
+        kind = "ip" if mode == 1 else "domain"
+        while True:
+            try:
+                host = endpoint(prompt("公网 IP" if mode == 1 else "面板域名", cfg.get("host", "") if cfg.get("mode") == kind else ""), kind)
+                break
+            except ValueError as err:
+                print("地址无效：", err)
+        cfg.update(mode=kind, host=host)
+        if mode == 2:
+            try:
+                for addr in dns(host):
+                    public = ipaddress.ip_address(addr).is_global
+                    print("  AAAA" if ":" in addr else "  A", addr, "" if public else "（本机解析为非公网地址，请核对公网 DNS）")
+            except socket.gaierror:
+                print("目前尚未解析。请在申请证书前完成 DNS 配置。")
+        restricted = choice("允许哪些来源打开管理面板？", ["任意 IP（登录需要管理员凭据）", "指定 IP 或网段"], 2 if cfg.get("allow") else 1)
+        if restricted == 2:
+            while True:
+                try:
+                    cfg["allow"] = networks(prompt("允许的 IP / CIDR，用英文逗号分隔", ",".join(cfg.get("allow", []))))
+                    break
+                except ValueError:
+                    print("请输入有效的 IPv4、IPv6 或 CIDR 网段")
+        else:
+            cfg["allow"] = []
+        while True:
+            folder = Path(prompt("游戏数据目录", cfg["data"])).expanduser().resolve()
+            if folder == STATE or folder in STATE.parents or STATE in folder.parents:
+                print("请选择独立的游戏数据目录")
+                continue
+            other = ROOT / "data"
+            if folder != default_dir.resolve() and (count is not None or mounted):
+                print(f"当前部署使用 {default_dir}，请沿用该目录；数据迁移需单独完成。")
+                continue
+            if other.resolve() != folder and registry(other) is not None and not mounted and not ACTIVE.exists():
+                print(f"项目下发现已有清单：{other}；选择不同目录将显示另一批服务器。")
+                if choice("使用哪个目录？", [str(other), str(folder)]) == 1:
+                    folder = other.resolve()
+            cfg["data"] = str(folder)
+            found = registry(folder)
+            cfg["expect_registry"] = found is not None
+            if found is not None:
+                print(f"发现 {found} 台已有服务器，将沿用 {folder}")
+            break
+        old_token = cfg.get("token", "")
+        options = (["沿用现有凭据"] if usable(old_token) else []) + ["自动生成", "手动输入"]
+        selected = options[choice("管理员 Token", options) - 1]
+        if selected == "自动生成":
+            cfg["token"] = secrets.token_urlsafe(32)
+            generated = True
+        elif selected == "手动输入":
+            while True:
+                value = getpass.getpass("管理员 Token（输入隐藏，至少 24 个字符）：")
+                if usable(value) and len(value) >= 24:
+                    cfg["token"] = value
+                    generated = False
+                    break
+                print("请使用至少 24 个字符的独立凭据")
+        print(f"\n确认部署\n主机  {socket.gethostname()}\n入口  {origin(cfg)}\n管理来源  {', '.join(cfg['allow']) or '任意 IP'}\n数据目录  {cfg['data']}")
+        print("80/TCP  公网证书验证   443/TCP  HTTPS 面板\n游戏端口按服单独开放。应用后将接受 Let's Encrypt 订户协议并为此地址申请、续期证书。")
+        decision = choice("应用这些设置？", ["应用配置并启动", "返回修改", "退出"])
+        if decision == 1:
+            save(PENDING, cfg)
+            if generated:
+                print("管理员 Token（请保存）：", cfg["token"], flush=True)
+            return cfg
+        if decision == 3:
+            raise SystemExit(0)
+
+
+def cert_name(cfg):
+    return "panel-" + hashlib.sha256(cfg["host"].encode()).hexdigest()[:24]
+
+
+def nginx(cfg=None):
+    http = """
+log_format panel '$remote_addr [$time_local] "$request_method $uri" $status';
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+server {
+    access_log /var/log/nginx/access.log panel;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    location ^~ /.well-known/acme-challenge/ { root /var/www/acme; try_files $uri =404; }
+    location / { RETURN; }
+}
+"""
+    if cfg is None:
+        return http.replace("RETURN", "return 404")
+    host = origin(cfg)[8:]
+    cert = "/etc/letsencrypt/live/" + cert_name(cfg)
+    acl = "\n".join("allow " + net + ";" for net in cfg["allow"])
+    if acl:
+        acl += "\ndeny all;"
+    # IP clients often omit SNI. Present the IP certificate during their default
+    # handshake, then route only requests with the configured Host to the panel.
+    fallback = (f"ssl_certificate {cert}/fullchain.pem;\n    ssl_certificate_key {cert}/privkey.pem;"
+                if cfg["mode"] == "ip" else "ssl_reject_handshake on;")
+    return http.replace("RETURN", "return 308 " + origin(cfg) + "$request_uri") + f"""
+server {{
+    access_log /var/log/nginx/access.log panel;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    {fallback}
+    return 444;
+}}
+server {{
+    access_log /var/log/nginx/access.log panel;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {host};
+    ssl_certificate {cert}/fullchain.pem;
+    ssl_certificate_key {cert}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    {acl}
+    location / {{
+        resolver 127.0.0.11 valid=10s;
+        set $backend http://tmodvision:3000;
+        proxy_pass $backend;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_http_version 1.1;
+        proxy_read_timeout 1h;
+        client_max_body_size 0;
+        proxy_request_buffering off;
+    }}
+}}
+"""
+
+
+def gateway(cfg, *args, **kwargs):
+    return compose(cfg, "exec", "-T", "gateway", *args, **kwargs)
+
+
+def tls_info(cfg):
+    with socket.create_connection(("127.0.0.1", 443), timeout=5) as conn:
+        with ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None).wrap_socket(conn, server_hostname=cfg["host"]) as tls:
+            return tls.getpeercert()["notAfter"]
+
+
+def check_ports(cfg):
+    # A previous deployment may already own these ports; Compose will reuse them.
+    ids = compose(cfg, "ps", "-q", "gateway", "tmodvision", capture=True).stdout.split()
+    owned = set()
+    if ids:
+        for item in json.loads(run(["docker", "inspect", *ids], capture=True).stdout):
+            for bindings in (item["NetworkSettings"]["Ports"] or {}).values():
+                owned.update(int(b["HostPort"]) for b in bindings or [])
+    for port in (80, 443):
+        if port in owned:
+            continue
+        for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+            try:
+                with socket.socket(family) as probe:
+                    if family == socket.AF_INET6:
+                        probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    probe.bind((address, port))
+            except OSError as err:
+                if err.errno == errno.EADDRINUSE:
+                    raise Problem(f"宿主机 {port}/TCP 已被其他服务占用，请释放端口后重新运行 start")
+                if err.errno not in (errno.EACCES, errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                    raise
+
+
+def activate(cfg):
+    old = read(ACTIVE)
+    if old and not Path(old["data"]).is_dir():
+        raise Problem("原数据目录不可用：" + old["data"] + "，请检查宿主机挂载")
+    existing_count = registry(cfg["data"])
+    if cfg.get("expect_registry") and existing_count is None:
+        raise Problem("原服务器清单不可用，请检查数据目录挂载：" + cfg["data"])
+    if existing_count is not None:
+        cfg["expect_registry"] = True
+    check_ports(old or cfg)
+    Path(cfg["data"]).mkdir(parents=True, exist_ok=True)
+    if not SITE.exists():
+        atomic(SITE, nginx(old), 0o644)
+    # Remove any legacy public backend binding even if issuance later fails.
+    compose(old or cfg, "up", "-d", "--wait", "--wait-timeout", "90", "--build", "tmodvision")
+    compose(old or cfg, "up", "-d", "gateway")
+    name = cert_name(cfg)
+    valid_file = gateway(cfg, "test", "-s", "/etc/letsencrypt/live/" + name + "/fullchain.pem", check=False).returncode == 0
+    if valid_file and old and old["host"] == cfg["host"]:
+        try:
+            tls_info(cfg)
+        except OSError:
+            valid_file = False
+    issuing = not valid_file or not old or old["host"] != cfg["host"]
+    if issuing:
+        opts = ["--ip-address", cfg["host"], "--preferred-profile", "shortlived"] if cfg["mode"] == "ip" else ["-d", cfg["host"]]
+        print("正在验证公网入口并申请 HTTPS 证书…", flush=True)
+        compose(cfg, "run", "--rm", "--no-deps", "--entrypoint", "certbot", "renewal", "certonly",
+                "--non-interactive", "--agree-tos", "--register-unsafely-without-email", "--keep-until-expiring",
+                "--webroot", "-w", "/var/www/acme", "--cert-name", name, *opts)
+    previous = SITE.read_text()
+    try:
+        desired = nginx(cfg)
+        if previous != desired or issuing:
+            atomic(SITE, desired, 0o644)
+            gateway(cfg, "nginx", "-t")
+            gateway(cfg, "nginx", "-s", "reload")
+        expiry = None
+        tls_error = ""
+        for _ in range(20):
+            try:
+                expiry = tls_info(cfg)
+                break
+            except (OSError, ValueError) as err:
+                tls_error = str(err)
+                time.sleep(.25)
+        if not expiry:
+            raise Problem("本机 HTTPS 验证失败：" + tls_error)
+        if old and old != cfg:
+            compose(cfg, "up", "-d", "--wait", "--wait-timeout", "90", "tmodvision")
+        compose(cfg, "up", "-d", "renewal")
+        save(ACTIVE, cfg)
+    except BaseException:
+        atomic(SITE, previous, 0o644)
+        gateway(cfg, "nginx", "-s", "reload", check=False)
+        if old:
+            compose(old, "up", "-d", "tmodvision", "renewal", check=False)
+        raise
+    PENDING.unlink(missing_ok=True)
+    print(f"管理面板  {origin(cfg)}\n证书到期  {expiry}\n游戏数据  {cfg['data']}")
+
+
+def report(cfg, diagnose=False):
+    print(f"管理面板  {origin(cfg)}\n数据目录  {cfg['data']}\n管理来源  {', '.join(cfg['allow']) or '任意 IP'}")
+    compose(cfg, "ps", "-a")
+    records = read(Path(cfg["data"]) / "servers.json") or []
+    running = run(["docker", "ps", "--format", "{{.Names}}"], capture=True).stdout.splitlines()
+    print("游戏服运行容器 ", sum(s.get("containerName", "tmodloader") in running for s in records), "/", len(records))
+    issues = []
+    try:
+        print("证书到期 ", tls_info(cfg))
+    except OSError as err:
+        issues.append("HTTPS 检查失败：" + str(err))
+    renewal = gateway(cfg, "cat", "/var/www/acme/renew-status", capture=True, check=False)
+    print("最近续期检查 ", renewal.stdout.strip() or "尚无记录")
+    if "FAILED" in renewal.stdout:
+        issues.append("最近一次自动续期失败")
+    if diagnose:
+        connection = http.client.HTTPConnection("127.0.0.1", 80, timeout=5)
+        try:
+            connection.request("HEAD", "/", headers={"Host": origin(cfg)[8:]})
+            response = connection.getresponse()
+            if response.status != 308 or response.getheader("Location") != origin(cfg) + "/":
+                issues.append("80/TCP 的 HTTPS 跳转与配置不一致")
+            else:
+                print("80/TCP  本机 HTTP 跳转正常")
+        except (OSError, http.client.HTTPException):
+            issues.append("无法访问 80/TCP")
+        finally:
+            connection.close()
+        if cfg["mode"] == "domain":
+            try:
+                print("DNS ", ", ".join(dns(cfg["host"])))
+            except socket.gaierror:
+                issues.append("域名解析失败")
+        panel = compose(cfg, "ps", "-q", "tmodvision", capture=True).stdout.strip()
+        if panel:
+            info = json.loads(run(["docker", "inspect", panel], capture=True).stdout)[0]
+            if not any(m["Destination"] == "/data" and m["Source"] == cfg["data"] for m in info["Mounts"]):
+                issues.append("面板实际挂载与配置的数据目录不一致")
+            if any(info["HostConfig"].get("PortBindings") or {}):
+                issues.append("面板后端存在额外的宿主机端口映射")
+        health = gateway(cfg, "wget", "-qO-", "http://tmodvision:3000/api/health", capture=True, check=False)
+        if health.returncode or '"ok"' not in health.stdout:
+            issues.append("网关到面板的健康检查失败")
+        # Probe a WebSocket handshake via the actual TLS virtual host. An
+        # unauthenticated connection is closed by the app after the upgrade.
+        try:
+            with socket.create_connection(("127.0.0.1", 443), timeout=5) as conn:
+                with ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None).wrap_socket(conn, server_hostname=cfg["host"]) as tls:
+                    host = origin(cfg)[8:]
+                    tls.sendall((f"GET /ws/console HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin(cfg)}\r\n"
+                                 "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").encode())
+                    code = tls.recv(1024).split(b" ", 2)[1]
+                    if code == b"403" and cfg["allow"]:
+                        print("WSS  本机探测受来源限制，请从允许网段核验")
+                    elif code == b"101":
+                        print("WSS  网关升级成功")
+                    else:
+                        issues.append("WebSocket 握手失败")
+        except (OSError, IndexError):
+            issues.append("无法探测 WebSocket 入口")
+        print("公网安全组请从允许的外部网络核验；80/TCP 须允许证书验证。")
+    for item in issues:
+        print("!", item)
+    return 1 if issues and diagnose else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="tModVision 主机部署管理")
+    parser.add_argument("command", choices=["start","configure","status","doctor","stop","token"])
+    parser.add_argument("action", nargs="?", choices=["reset"])
+    args = parser.parse_args()
+    if (args.command == "token") != bool(args.action):
+        parser.error("使用 ./tmodvision token reset")
+    host_check()
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    with (STATE / "cli.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Problem("另一个部署命令正在执行")
+        active, pending = read(ACTIVE), read(PENDING)
+        cfg = pending or active
+        if args.command in ("start", "configure"):
+            if args.command == "configure" or not cfg:
+                base, mounted = inventory()
+                cfg = wizard(cfg or base, mounted)
+            else:
+                print("继续应用上次保存的设置" if pending else "已读取现有部署配置", flush=True)
+            activate(cfg)
+        elif not cfg:
+            raise Problem("尚未初始化，请运行 ./tmodvision start")
+        elif args.command in ("status", "doctor"):
+            if pending:
+                print("存在待应用配置，运行 start 可重试。")
+            return report(active or pending, args.command == "doctor")
+        elif args.command == "stop":
+            compose(cfg, "stop", "renewal", "gateway", "tmodvision")
+        else:
+            if pending:
+                raise Problem("请先完成待应用的部署，或运行 configure 修正设置")
+            cfg = dict(active, token=secrets.token_urlsafe(32))
+            save(PENDING, cfg)
+            print("新的管理员 Token（请保存）：", cfg["token"], flush=True)
+            compose(cfg, "up", "-d", "--no-deps", "--wait", "--wait-timeout", "90", "tmodvision")
+            save(ACTIVE, cfg)
+            PENDING.unlink()
+            print("管理员凭据已更新，原有浏览器会话已失效。")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (Problem, OSError, ValueError, EOFError, KeyboardInterrupt) as exc:
+        sys.exit(f"部署未完成：{exc or '已取消'}")

@@ -5,7 +5,7 @@ import {
   disableMod,
   deleteMod,
 } from '../services/files';
-import { installWorkshopMod } from '../services/mods';
+import { installWorkshopMod, importLocalMod } from '../services/mods';
 import { searchWorkshop } from '../services/workshop';
 
 const router = Router({ mergeParams: true });
@@ -31,6 +31,13 @@ router.get('/workshop/search', async (req: Request<{ serverId: string }>, res, n
   } catch (err) {
     next(err);
   }
+});
+
+router.post('/import', async (req: Request<{serverId:string}>, res, next) => {
+  try {
+    if (!req.is('application/octet-stream')) return res.status(415).json({error:'请选择 .tmod 文件'});
+    res.json(await importLocalMod(req.params.serverId, req));
+  } catch (err) { next(err); }
 });
 
 router.post('/workshop/install', async (req: Request<{ serverId: string }>, res, next) => {

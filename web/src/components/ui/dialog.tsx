@@ -2,13 +2,24 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 
 export const Dialog = ({ open, onOpenChange, children }: { open: boolean; onOpenChange: (v: boolean) => void; children: React.ReactNode }) => {
+  const ref = React.useRef<HTMLDialogElement>(null);
+  React.useEffect(() => {
+    const dialog = ref.current;
+    if (open) dialog?.showModal();
+    return () => dialog?.close();
+  }, [open]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => onOpenChange(false)}>
-      <div className="w-full max-w-lg rounded-lg bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
-        {children}
-      </div>
-    </div>
+    <dialog ref={ref} aria-label="操作确认"
+      onCancel={event => { event.preventDefault(); onOpenChange(false); }}
+      onClick={event => {
+        if (event.target !== event.currentTarget) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onOpenChange(false);
+      }}
+      className="m-auto w-[calc(100%_-_2rem)] max-w-lg rounded-lg bg-background p-6 text-foreground shadow-lg backdrop:bg-black/50">
+      {children}
+    </dialog>
   );
 };
 

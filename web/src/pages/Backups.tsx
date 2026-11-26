@@ -145,7 +145,7 @@ export default function Backups() {
           <Card>
             <CardHeader>
               <CardTitle>自动备份配置</CardTitle>
-              <CardDescription>配置修改后保存生效</CardDescription>
+              <CardDescription>此计划适用于所有服务器，保存后生效</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2">

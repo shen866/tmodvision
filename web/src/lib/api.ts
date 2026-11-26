@@ -1,17 +1,16 @@
 const API_BASE = '';
 
-function getToken() {
-  return localStorage.getItem('tmodvision_token') || '';
-}
-
 async function request(method: string, path: string, body?: any) {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${getToken()}`,
-  };
+  const headers: Record<string,string> = {};
   const opts: RequestInit = { method, headers };
   if (body) {
-    headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
+    if (body instanceof File) {
+      headers['Content-Type'] = 'application/octet-stream';
+      opts.body = body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
   }
   const res = await fetch(`${API_BASE}${path}`, opts);
   if (res.status === 401) {
@@ -42,14 +41,15 @@ export const api = {
 
   forServer,
 
-  verify: (token: string) =>
-    fetch('/api/auth/verify', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    }).then((r) => r.ok),
+  login: async (token: string) => {
+    const res = await fetch('/api/auth/login', {method:'POST',headers:{Authorization:'Bearer '+token}});
+    if (!res.ok) throw new Error((await res.json()).error || '登录失败');
+  },
+  session: () => fetch('/api/auth/session').then(r => r.ok),
+  logout: () => request('POST','/api/auth/logout'),
 
   wsUrl: (serverId: string) => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${protocol}://${window.location.host}/ws/console?serverId=${encodeURIComponent(serverId)}&token=${getToken()}`;
+    return `${protocol}://${window.location.host}/ws/console?serverId=${encodeURIComponent(serverId)}`;
   },
 };

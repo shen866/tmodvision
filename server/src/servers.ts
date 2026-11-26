@@ -14,6 +14,7 @@ export interface ServerConfig {
   composeDir: string;
   dataDir: string;
   port: number;
+  version?: string;
 }
 
 export const SERVERS_JSON_PATH = path.join(DATA_DIR, 'servers.json');
@@ -31,7 +32,8 @@ export async function loadServers(): Promise<ServerConfig[]> {
     cachedServers = parsed.map(normalizeServer);
     cachedAt = Date.now();
     return cachedServers;
-  } catch {
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
     // No servers.json yet: user must create servers through the panel
     cachedServers = [];
     cachedAt = Date.now();
@@ -61,6 +63,7 @@ function normalizeServer(s: Partial<ServerConfig> & { id: string }): ServerConfi
     containerName: s.containerName || TMOD_CONTAINER_NAME,
     composeDir: s.composeDir || '/app',
     dataDir: s.dataDir ? path.resolve(DATA_DIR, s.dataDir) : DATA_DIR,
+    version: s.version,
     port: Number(s.port) || 7777,
   };
 }
@@ -84,4 +87,22 @@ export function getServerPaths(server: ServerConfig) {
 
 export function getServerPathsById(serverId: string): Promise<ReturnType<typeof getServerPaths>> {
   return getServerById(serverId).then(getServerPaths);
+}
+
+let registryTail = Promise.resolve();
+export function editRegistry<T>(action: () => Promise<T>): Promise<T> {
+  const next = registryTail.then(action);
+  registryTail = next.then(() => {}, () => {});
+  return next;
+}
+
+export async function saveServers(servers: ServerConfig[]) {
+  await fs.writeFile(SERVERS_JSON_PATH + '.tmp', JSON.stringify(servers, null, 2));
+  await fs.rename(SERVERS_JSON_PATH + '.tmp', SERVERS_JSON_PATH);
+  invalidateServersCache();
+}
+
+export function checkPort(servers: ServerConfig[], id: string, port: number) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('端口必须在 1–65535 之间');
+  if (servers.some(s => s.id !== id && s.port === port)) throw new Error('这个端口已分配给其他服务器');
 }

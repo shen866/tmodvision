@@ -1,8 +1,9 @@
-import { Routes, Route, Navigate, Link, useLocation, useParams } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useLocation, useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ServerProvider, useServers } from '@/contexts/ServerContext';
+import { StatusProvider, Phase, useServerStatus } from '@/components/ServerStatus';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import ServerPage from '@/pages/Server';
@@ -17,12 +18,13 @@ import BackupsPage from '@/pages/Backups';
 function ServerSidebar() {
   const location = useLocation();
   const { serverId } = useParams<{ serverId: string }>();
-  const { servers, currentServerId, setCurrentServerId } = useServers();
+  const { servers } = useServers();
+  const navigate = useNavigate();
 
   if (!serverId) return null;
 
   const links = [
-    { path: `/server/${serverId}`, label: '详情' },
+    { path: `/server/${serverId}`, label: '运行概览' },
     { path: `/server/${serverId}/console`, label: '控制台' },
     { path: `/server/${serverId}/mods`, label: '模组' },
     { path: `/server/${serverId}/worlds`, label: '世界' },
@@ -35,11 +37,10 @@ function ServerSidebar() {
       <div className="space-y-1">
         <p className="px-3 text-xs font-medium text-muted-foreground">当前服务器</p>
         <select
-          value={currentServerId || ''}
+          aria-label="切换服务器" value={serverId}
           onChange={(e) => {
             const id = e.target.value;
-            setCurrentServerId(id);
-            window.location.href = `/server/${id}`;
+            navigate(location.pathname.replace('/server/' + serverId, '/server/' + id));
           }}
           className="w-full rounded-md border bg-background px-3 py-2 text-sm"
         >
@@ -71,9 +72,16 @@ function ServerSidebar() {
 
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const { serverId } = useParams();
+  const { servers } = useServers();
+  const selected = servers.find(s => s.id === serverId);
+  const { data, error } = useServerStatus();
+  const [menu, setMenu] = useState(false);
+  useEffect(() => setMenu(false), [location.pathname]);
   const isHome = location.pathname === '/';
 
-  const logout = () => {
+  const logout = async () => {
+    await api.logout();
     localStorage.removeItem('tmodvision_token');
     window.location.href = '/login';
   };
@@ -81,20 +89,21 @@ function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="border-b bg-background px-6 py-3">
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
+        <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div className="flex items-center gap-2">
             <Link to="/" className="text-xl font-bold text-primary">
               tModVision
             </Link>
-            <span className="text-xs text-muted-foreground">个人 tModLoader 服务器</span>
+            <span className="text-xs text-muted-foreground">服务器管理</span>
           </div>
+          <div className="flex gap-2"><Button className="md:hidden" variant="outline" size="sm" onClick={() => setMenu(!menu)} aria-expanded={menu}>导航</Button>
           <Button variant="ghost" size="sm" onClick={logout}>
             退出
-          </Button>
+          </Button></div>
         </div>
       </header>
-      <div className="mx-auto flex w-full max-w-6xl flex-1 gap-6 overflow-hidden p-6">
-        <aside className="hidden w-56 shrink-0 flex-col gap-4 overflow-y-auto md:flex">
+      <div className="mx-auto flex w-full relative max-w-7xl flex-1 gap-6 overflow-hidden p-3 md:p-6">
+        <aside aria-label="主导航" className={'w-52 shrink-0 flex-col gap-3 overflow-y-auto md:static md:flex ' + (menu ? 'absolute inset-y-0 left-0 z-20 flex border-r bg-background p-4 shadow-lg' : 'hidden')}>
           <Link
             to="/"
             className={`rounded-md px-3 py-2 text-sm font-medium transition ${
@@ -103,7 +112,7 @@ function Layout({ children }: { children: React.ReactNode }) {
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
             }`}
           >
-            仪表盘
+            服务器总览
           </Link>
           <Link
             to="/resources"
@@ -117,24 +126,24 @@ function Layout({ children }: { children: React.ReactNode }) {
           </Link>
           {!isHome && <ServerSidebar />}
         </aside>
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {selected && <div className="mb-5 flex flex-wrap items-center gap-3 border-b pb-3 text-sm">
+            <strong>{selected.name}</strong><span className="text-muted-foreground">端口 {data?.hostPort || selected.port}</span>
+            <Phase value={error ? '状态未知' : data?.phase}/></div>}
+          {children}</main>
       </div>
     </div>
   );
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { serverId } = useParams();
   const [checking, setChecking] = useState(true);
   const [valid, setValid] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('tmodvision_token') || '';
-    if (!token) {
-      setChecking(false);
-      return;
-    }
-    api
-      .verify(token)
+    localStorage.removeItem('tmodvision_token');
+    api.session().catch(() => false)
       .then((ok) => setValid(ok))
       .finally(() => setChecking(false));
   }, []);
@@ -143,7 +152,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!valid) return <Navigate to="/login" replace />;
   return (
     <ServerProvider>
-      <Layout>{children}</Layout>
+      <StatusProvider key={serverId || 'fleet'} id={serverId}><Layout>{children}</Layout></StatusProvider>
     </ServerProvider>
   );
 }

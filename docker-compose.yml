@@ -3,17 +3,52 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      start_period: 5s
+      timeout: 3s
+      retries: 5
     container_name: tmodvision
     restart: unless-stopped
-    ports:
-      - "${SERVER_PORT:-3000}:3000"
     environment:
-      - PORT=3000
-      - AUTH_TOKEN=${AUTH_TOKEN:?AUTH_TOKEN is required}
-      - STEAM_API_KEY=${STEAM_API_KEY:-}
-      - TMOD_CONTAINER_NAME=${TMOD_CONTAINER_NAME:-tmodloader}
-      - DATA_DIR=/data
-      - HOST_DATA_DIR=${HOST_DATA_DIR:-/data}
+      PORT: 3000
+      AUTH_TOKEN: ${AUTH_TOKEN:?Run ./tmodvision start first}
+      TMOD_VERSION: ${TMOD_VERSION:-v2026.04.3.0}
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      TMOD_CONTAINER_NAME: ${TMOD_CONTAINER_NAME:-tmodloader}
+      DATA_DIR: /data
+      HOST_DATA_DIR: ${HOST_DATA_DIR:?Run ./tmodvision start first}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data:/data
+      - type: bind
+        source: ${HOST_DATA_DIR}
+        target: /data
+
+  gateway:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/gateway.sh"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/gateway.sh:/gateway.sh:ro
+      - ./.tmodvision/nginx:/etc/nginx/conf.d:ro
+      - certificates:/etc/letsencrypt:ro
+      - challenges:/var/www/acme:ro
+
+  renewal:
+    image: certbot/certbot:v5.4.0
+    restart: unless-stopped
+    environment:
+      PANEL_CERT_NAME: ${PANEL_CERT_NAME:-}
+    entrypoint: ["/bin/sh", "/renew.sh"]
+    volumes:
+      - ./deploy/renew.sh:/renew.sh:ro
+      - certificates:/etc/letsencrypt
+      - challenges:/var/www/acme
+
+volumes:
+  certificates:
+  challenges:

@@ -16,13 +16,11 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      const ok = await api.verify(token);
-      if (ok) {
-        localStorage.setItem('tmodvision_token', token);
-        navigate('/', { replace: true });
-      } else {
-        setError('Token 无效');
-      }
+      await api.login(token);
+      localStorage.removeItem('tmodvision_token');
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败');
     } finally {
       setLoading(false);
     }

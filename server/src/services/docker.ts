@@ -1,9 +1,13 @@
 import Docker from 'dockerode';
 import path from 'path';
+import { launchSettings, saveLaunch } from './launch';
+import { checkVersion, defaultVersion, resolveTmodloaderTemplate } from './releases';
+import { readServerConfig, writeServerConfig } from './files';
+import { assertSafeName } from '../lib/safe';
 import { execFileSync } from 'child_process';
 import { Readable } from 'stream';
 import { DATA_DIR, HOST_DATA_DIR } from '../config';
-import { getServerById, getServerPaths } from '../servers';
+import { getServerById, getServerPaths, ServerConfig } from '../servers';
 
 const docker = new Docker();
 
@@ -14,6 +18,19 @@ function toHostPath(containerPath: string): string {
     return HOST_DATA_DIR + containerPath.slice(DATA_DIR.length);
   }
   return containerPath;
+}
+
+export async function checkPublishedPort(port: number, ownName: string) {
+  const containers = await docker.listContainers();
+  if (
+    containers.some(
+      (c) =>
+        !c.Names.includes('/' + ownName) &&
+        c.Ports.some((p) => p.Type === 'tcp' && p.PublicPort === port)
+    )
+  ) {
+    throw new Error('此端口正在被其他容器使用');
+  }
 }
 
 export async function getContainer(serverId: string) {
@@ -32,6 +49,12 @@ export async function getStatus(serverId: string) {
   const info = await container.inspect();
   return {
     state: info.State.Status,
+    version: info.Config.Env?.find((v) => v.startsWith('TMOD_VERSION='))?.slice(13) || null,
+    hostPort:
+      Number(
+        (Object.values(info.HostConfig.PortBindings || {}) as { HostPort: string }[][])[0]?.[0]
+          ?.HostPort
+      ) || null,
     running: info.State.Running,
     exitCode: info.State.ExitCode,
     startedAt: info.State.StartedAt,
@@ -42,101 +65,160 @@ export async function getStatus(serverId: string) {
   };
 }
 
-export async function startServer(serverId: string) {
-  const container = await getContainer(serverId);
-  if (!container) {
-    // Container doesn't exist yet — create and start it
-    return createAndStartServerContainer(serverId);
+const active = new Map<string, string>();
+const errors = new Map<string, string>();
+export function operation(id: string) {
+  return { activity: active.get(id), lastError: errors.get(id) };
+}
+async function runOperation(id: string, label: string, task: () => Promise<void>) {
+  if (active.has(id)) throw new Error('此服务器正在执行其他操作');
+  active.set(id, label);
+  errors.delete(id);
+  try {
+    await task();
+  } catch (err) {
+    errors.set(id, err instanceof Error ? err.message : String(err));
+    throw err;
+  } finally {
+    active.delete(id);
   }
-  await container.start();
 }
 
-export async function stopServer(serverId: string) {
-  const container = await getContainer(serverId);
-  if (!container) throw new Error('Container not found');
-  await container.stop({ t: 30 });
+const builds = new Map<string, Promise<string>>();
+async function prepareImage(server: ServerConfig) {
+  const version = checkVersion(server.version || defaultVersion);
+  const tag = 'tmodvision-tmodloader:' + version.toLowerCase();
+  try {
+    await docker.getImage(tag).inspect();
+    return tag;
+  } catch (err: any) {
+    if (err.statusCode !== 404) throw err;
+  }
+  const existing = builds.get(tag);
+  if (existing) return existing;
+  const build = (async () => {
+    // A shared release tag must always come from the panel's canonical template.
+    const directory = await resolveTmodloaderTemplate();
+    const archive = execFileSync('tar', ['-c', '--exclude=tModLoader.zip', '-C', directory, '.'], {
+      maxBuffer: 100 * 1024 * 1024,
+    });
+    const stream = await docker.buildImage(Readable.from([archive]), {
+      t: tag,
+      platform: 'linux/amd64',
+      buildargs: { TMOD_VERSION: version },
+    });
+    await new Promise<void>((resolve, reject) =>
+      docker.modem.followProgress(stream, (err, events) => {
+        const failure = events?.find((event) => event.error)?.error;
+        if (err || failure) reject(err || new Error(failure));
+        else resolve();
+      })
+    );
+    return tag;
+  })();
+  builds.set(tag, build);
+  try {
+    return await build;
+  } finally {
+    builds.delete(tag);
+  }
 }
 
-export async function restartServer(serverId: string) {
-  const container = await getContainer(serverId);
-  if (!container) throw new Error('Container not found');
-  await container.restart({ t: 30 });
+export function prepareServerImage(id: string) {
+  return runOperation(id, '准备版本镜像', async () => {
+    await prepareImage(await getServerById(id));
+  });
 }
 
-/**
- * Build the tmodloader image and create + start the container for a server.
- * Idempotent — if the container already exists, just start it.
- */
-export async function createAndStartServerContainer(serverId: string): Promise<void> {
-  const server = await getServerById(serverId);
-
-  // If container already exists, just start it
-  const existing = await getContainer(serverId);
-  if (existing) {
-    const info = await existing.inspect();
-    if (!info.State.Running) {
-      await existing.start();
+async function launch(id: string, restart: boolean) {
+  const server = await getServerById(id);
+  const old = await getContainer(id);
+  const info = await old?.inspect();
+  const config = await readServerConfig(id);
+  const internalPort = Number(config.port) || 7777;
+  const binding = internalPort + '/tcp';
+  const oldVersion = info?.Config.Env?.find((v) => v.startsWith('TMOD_VERSION='))?.slice(13);
+  const replace =
+    !info ||
+    (server.version && oldVersion !== server.version) ||
+    Number(info.HostConfig.PortBindings?.[binding]?.[0]?.HostPort) !== server.port;
+  let image: string | undefined;
+  if (replace) {
+    active.set(id, '准备版本镜像');
+    image = info && !server.version ? info.Image : await prepareImage(server);
+  }
+  active.set(id, '正在应用启动设置');
+  // Older panel releases stored the panel-side world directory in game config.
+  const paths = getServerPaths(server);
+  if (
+    config.world?.startsWith(paths.worldsDir + '/') &&
+    paths.worldsDir !== '/data/tModLoader/Worlds'
+  ) {
+    config.world = '/data/tModLoader/Worlds/' + path.basename(config.world);
+    config.worldpath = '/data/tModLoader/Worlds/';
+    await writeServerConfig(id, config);
+  }
+  const snapshot = await launchSettings(id);
+  let target = old;
+  if (replace && image) {
+    const candidate = await docker.createContainer({
+      Image: image,
+      name: old ? server.containerName + '-next-' + Date.now() : server.containerName,
+      Tty: true,
+      OpenStdin: true,
+      ExposedPorts: { [binding]: {} },
+      HostConfig: {
+        ...info?.HostConfig,
+        Binds: info?.HostConfig.Binds || [toHostPath(server.dataDir) + ':/data'],
+        PortBindings: { [binding]: [{ HostPort: String(server.port) }] },
+        RestartPolicy: info?.HostConfig.RestartPolicy || { Name: 'unless-stopped' },
+      },
+      ...(info
+        ? {
+            Env: info.Config.Env.filter((v) => !v.startsWith('TMOD_VERSION=')),
+            Labels: info.Config.Labels,
+          }
+        : {}),
+    });
+    let renamed = false;
+    try {
+      if (old) {
+        if (info?.State.Running) await old.stop({ t: 30 });
+        await old.rename({ name: server.containerName + '-previous-' + Date.now() });
+        renamed = true;
+        await candidate.rename({ name: server.containerName });
+      }
+      await candidate.start();
+    } catch (err) {
+      await candidate.remove({ force: true });
+      if (old && renamed) await old.rename({ name: server.containerName });
+      if (old && info?.State.Running && !(await old.inspect()).State.Running) await old.start();
+      throw err;
     }
-    return;
+    target = candidate;
+    if (old) await old.remove();
+  } else if (old) {
+    if (info?.State.Running && !restart) return;
+    if (info?.State.Running) await old.restart({ t: 30 });
+    else await old.start();
   }
+  if (target)
+    await saveLaunch(id, { ...snapshot, startedAt: (await target.inspect()).State.StartedAt });
+}
 
-  const buildContextDir = path.join(server.composeDir, 'tmodloader');
-  const imageTag = `tmodvision-tmodloader:${serverId}`;
-
-  // Build the image from the tmodloader directory
-  console.log(`[docker] Building image ${imageTag} from ${buildContextDir}...`);
-  const tarBuffer = execFileSync('tar', ['-c', '-C', buildContextDir, '.'], {
-    maxBuffer: 1024 * 1024 * 100, // 100MB
+export function startServer(id: string) {
+  return runOperation(id, '正在启动', () => launch(id, false));
+}
+export const createAndStartServerContainer = startServer;
+export function restartServer(id: string) {
+  return runOperation(id, '正在重启', () => launch(id, true));
+}
+export function stopServer(id: string) {
+  return runOperation(id, '正在停止', async () => {
+    const container = await getContainer(id);
+    if (!container) throw new Error('找不到服务器容器');
+    await container.stop({ t: 30 });
   });
-  const buildStream = await docker.buildImage(Readable.from(tarBuffer), {
-    t: imageTag,
-    buildargs: { TMOD_VERSION: process.env.TMOD_VERSION || 'v2026.04.3.0' },
-  });
-  // Wait for build to finish
-  await new Promise<void>((resolve, reject) => {
-    docker.modem.followProgress(buildStream, (err) => (err ? reject(err) : resolve()));
-  });
-  console.log(`[docker] Image ${imageTag} built successfully`);
-
-  // Create the container
-  const container = await docker.createContainer({
-    Image: imageTag,
-    name: server.containerName,
-    Hostname: '',
-    Domainname: '',
-    User: '',
-    AttachStdin: false,
-    AttachStdout: false,
-    AttachStderr: false,
-    Tty: true,
-    OpenStdin: true,
-    StdinOnce: false,
-    Env: [
-      'TMOD_SHUTDOWN_MESSAGE=Server is shutting down NOW!',
-      'TMOD_AUTOSAVE_INTERVAL=10',
-      `TMOD_MOTD=Welcome to ${server.name}`,
-      'TMOD_PASS=',
-      'TMOD_MAXPLAYERS=8',
-      'TMOD_WORLDSIZE=2',
-      'TMOD_WORLDSEED=',
-      'TMOD_DIFFICULTY=0',
-      'TMOD_SECURE=0',
-      'TMOD_LANGUAGE=en-US',
-      'TMOD_NPCSTREAM=60',
-      'TMOD_UPNP=0',
-      'TMOD_PORT=7777',
-    ],
-    ExposedPorts: { '7777/tcp': {} },
-    HostConfig: {
-      PortBindings: { '7777/tcp': [{ HostPort: String(server.port) }] },
-      Binds: [`${toHostPath(server.dataDir)}:/data`],
-      RestartPolicy: { Name: 'unless-stopped' },
-    },
-  });
-
-  console.log(`[docker] Container ${server.containerName} created, starting...`);
-  await container.start();
-  console.log(`[docker] Container ${server.containerName} started`);
 }
 
 export async function injectCommand(serverId: string, command: string) {
@@ -184,9 +266,11 @@ export async function streamLogs(
   });
   // Buffer incomplete frames across data events — Docker may split a
   // multiplexed frame at arbitrary boundaries.
+  const tty = (await container.inspect()).Config.Tty;
   const parser = createDockerLogParser();
   stream.on('data', (chunk: Buffer) => {
-    for (const line of parser.push(chunk)) onData(line);
+    if (tty) onData(chunk.toString());
+    else for (const line of parser.push(chunk)) onData(line);
   });
   stream.on('error', onError);
   return {
@@ -239,14 +323,14 @@ export async function runSteamCmd(serverId: string, workshopId: string): Promise
     await docker.getImage(image).inspect();
   } catch {
     await new Promise<void>((resolve, reject) => {
-      docker.pull(image, (err: any, stream: any) => {
+      docker.pull(image, { platform: 'linux/amd64' }, (err: any, stream: any) => {
         if (err) return reject(err);
         docker.modem.followProgress(stream, (err2) => (err2 ? reject(err2) : resolve()));
       });
     });
   }
 
-  await docker.run(
+  const [result] = await docker.run(
     image,
     [
       '+force_install_dir',
@@ -266,6 +350,7 @@ export async function runSteamCmd(serverId: string, workshopId: string): Promise
       },
     }
   );
+  if (result.StatusCode !== 0) throw new Error('SteamCMD 下载失败');
 }
 
 export async function createWorld(
@@ -277,7 +362,11 @@ export async function createWorld(
 ): Promise<void> {
   const server = await getServerById(serverId);
   const paths = getServerPaths(server);
-  const image = 'tmodvision-tmodloader'; // same image as server service
+  assertSafeName(name);
+  const existing = await getContainer(serverId);
+  const image =
+    server.version || !existing ? await prepareImage(server) : (await existing.inspect()).Image;
+  const worldEntrypoint = (await docker.getImage(image).inspect()).Config.Labels?.['io.tmodvision.world-entrypoint'];
   const worldPath = path.join(paths.worldsDir, `${name}.wld`);
   const args = [
     '-server',
@@ -298,7 +387,7 @@ export async function createWorld(
 
   const container = await docker.createContainer({
     Image: image,
-    Cmd: ['/terraria-server/LaunchUtils/ScriptCaller.sh', ...args],
+    ...(worldEntrypoint ? { Cmd: ['--create-world', ...args] } : { Entrypoint: ['/terraria-server/LaunchUtils/ScriptCaller.sh'], Cmd: args }),
     HostConfig: {
       Binds: [`${toHostPath(server.dataDir)}:${server.dataDir}`],
       AutoRemove: false,
@@ -322,7 +411,7 @@ export async function createWorld(
       try {
         await fs.access(worldPath);
         await fs.access(twldPath);
-        break; // both world files exist — done
+        return; // both world files exist
       } catch {
         // not ready yet
       }
@@ -332,6 +421,7 @@ export async function createWorld(
         throw new Error('世界创建容器已退出，但世界文件未生成（可能脚本执行失败）');
       }
     }
+    throw new Error('等待世界生成超时');
   } finally {
     try {
       await container.stop({ t: 10 });

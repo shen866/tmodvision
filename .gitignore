@@ -10,3 +10,7 @@ tmodloader/tModLoader.zip
 .playwright-mcp/
 console-*.png
 .DS_Store
+
+.tmodvision/
+
+__pycache__/

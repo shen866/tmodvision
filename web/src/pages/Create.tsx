@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectOption } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { VersionField } from '@/components/VersionField';
 import { Switch } from '@/components/ui/switch';
 import { useServers } from '@/contexts/ServerContext';
 
@@ -12,9 +13,17 @@ export default function Create() {
   const navigate = useNavigate();
   const { servers, refreshServers } = useServers();
 
+  const [version, setVersion] = useState('');
   const [id, setId] = useState('');
   const [name, setName] = useState('');
   const [port, setPort] = useState('7778');
+  const [portEdited, setPortEdited] = useState(false);
+  useEffect(() => {
+    if (portEdited) return;
+    let available = 7777;
+    while (servers.some(server => server.port === available)) available++;
+    setPort(String(available));
+  }, [servers, portEdited]);
   const [dataDir, setDataDir] = useState('');
   const [composeDir, setComposeDir] = useState('');
   const [copyModsFrom, setCopyModsFrom] = useState('');
@@ -41,6 +50,7 @@ export default function Create() {
       name,
       port: Number(port),
     };
+    if (version.trim()) body.version = version.trim();
     if (dataDir) body.dataDir = dataDir;
     if (composeDir) body.composeDir = composeDir;
     if (copyModsFrom) body.copyModsFrom = copyModsFrom;
@@ -57,7 +67,7 @@ export default function Create() {
     try {
       await api.post('/api/servers', body);
       await refreshServers();
-      navigate('/');
+      navigate('/server/' + id);
     } catch (err: any) {
       setError(err.message || '创建失败');
     }
@@ -97,8 +107,10 @@ export default function Create() {
             </div>
             <div>
               <label className="text-sm font-medium">端口</label>
-              <Input type="number" value={port} onChange={(e) => setPort(e.target.value)} required />
+              <Input type="number" value={port} min={1} max={65535} onChange={(e) => {setPortEdited(true); setPort(e.target.value);}} required />
             </div>
+            <VersionField value={version} onChange={setVersion}/>
+            <details className="md:col-span-2"><summary className="cursor-pointer text-sm">高级目录设置</summary><div className="mt-3 grid gap-3">
             <div>
               <label className="text-sm font-medium">数据目录（可选）</label>
               <Input
@@ -115,6 +127,7 @@ export default function Create() {
                 placeholder="默认：./servers/<id>"
               />
             </div>
+            </div></details>
           </CardContent>
         </Card>
 
@@ -138,12 +151,12 @@ export default function Create() {
         <Card>
           <CardHeader>
             <CardTitle>世界参数</CardTitle>
-            <CardDescription>立即创建一个世界存档</CardDescription>
+            <CardDescription>首次启动时按这些参数生成世界</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center gap-2">
               <Switch checked={createWorld} onCheckedChange={(v) => setCreateWorld(v)} />
-              <label className="text-sm font-medium">创建世界</label>
+              <label className="text-sm font-medium">自定义初始世界</label>
             </div>
 
             {createWorld && (

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useServerStatus } from '@/components/ServerStatus';
 import { useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { formatBytes } from '@/lib/utils';
@@ -12,6 +13,8 @@ import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogTitle } fr
 interface Mod {
   name: string;
   enabled: boolean;
+  version?: string;
+  loader?: string;
   size: number;
   mtime: string;
 }
@@ -25,11 +28,13 @@ interface WorkshopResult {
 
 export default function ModsPage() {
   const { serverId } = useParams<{ serverId: string }>();
+  const {data: status, refresh} = useServerStatus();
   const [mods, setMods] = useState<Mod[]>([]);
   const [modsLoading, setModsLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<WorkshopResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [workshopId, setWorkshopId] = useState('');
   const [installingIds, setInstallingIds] = useState<Set<string>>(new Set());
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
@@ -45,8 +50,8 @@ export default function ModsPage() {
     setModsLoading(true);
     try {
       const data = await serverApi.get('/mods');
-      setMods(data);
-    } finally {
+      setMods(data); refresh();
+    } catch (err) { setMessage((err as Error).message); } finally {
       setModsLoading(false);
     }
   };
@@ -54,6 +59,17 @@ export default function ModsPage() {
   useEffect(() => {
     fetchMods();
   }, [serverId]);
+
+  async function importFile(file?: File) {
+    if (!file || !serverApi) return;
+    setImporting(true);
+    try {
+      const result = await serverApi.post('/mods/import',file);
+      setMessage('已导入 ' + result.name + ' v' + result.version + '，可在本服清单中选择启用');
+      await fetchMods();
+    } catch (err) {setMessage((err as Error).message);}
+    finally {setImporting(false);}
+  }
 
   const toggle = async (mod: Mod) => {
     if (!serverApi) return;
@@ -143,6 +159,48 @@ export default function ModsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>本服模组</CardTitle>
+          <label className="text-sm">导入本地 .tmod
+            <input aria-label="导入本地模组" className="ml-2 max-w-full text-xs" type="file" accept=".tmod" disabled={importing}
+              onChange={e=>{const file=e.target.files?.[0]; e.target.value=''; importFile(file);}}/>
+          </label>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {modsLoading && <p className="text-sm text-muted-foreground">加载中...</p>}
+          {!modsLoading &&
+            mods.map((mod) => (
+              <div key={mod.name} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+                <div>
+                  <p className="font-medium">{mod.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {mod.version ? 'v' + mod.version + ' · ' : ''}{mod.loader ? '构建于 tML ' + mod.loader + ' · ' : ''}{formatBytes(mod.size)} · {new Date(mod.mtime).toLocaleString()}
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">{status?.loadedMods ? (status.loadedMods[mod.name] ? '运行中 · v' + status.loadedMods[mod.name] : '本次未加载') : status?.appliedMods?.includes(mod.name) ? '本次启动已选用 · 加载待确认' : '加载状态待确认'}</p>
+                <div className="flex items-center gap-3">
+                  {mod.enabled ? <Badge>下次启用</Badge> : <Badge variant="outline">下次禁用</Badge>}
+                  <Switch
+                    checked={mod.enabled}
+                    onCheckedChange={() => toggle(mod)}
+                    disabled={isToggling(mod.name)}
+                  />
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => setDeleteTarget(mod)}
+                    disabled={deletingId === mod.name}
+                  >
+                    删除
+                  </Button>
+                </div>
+              </div>
+            ))}
+          {!modsLoading && mods.length === 0 && <p className="text-sm text-muted-foreground">暂无模组</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>工坊搜索</CardTitle>
           <CardDescription>需要配置 STEAM_API_KEY，否则请使用下方 ID 安装</CardDescription>
         </CardHeader>
@@ -199,43 +257,6 @@ export default function ModsPage() {
           >
             安装
           </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>已安装模组</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {modsLoading && <p className="text-sm text-muted-foreground">加载中...</p>}
-          {!modsLoading &&
-            mods.map((mod) => (
-              <div key={mod.name} className="flex items-center justify-between rounded-md border p-3">
-                <div>
-                  <p className="font-medium">{mod.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(mod.size)} · {new Date(mod.mtime).toLocaleString()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  {mod.enabled ? <Badge>已启用</Badge> : <Badge variant="outline">未启用</Badge>}
-                  <Switch
-                    checked={mod.enabled}
-                    onCheckedChange={() => toggle(mod)}
-                    disabled={isToggling(mod.name)}
-                  />
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => setDeleteTarget(mod)}
-                    disabled={deletingId === mod.name}
-                  >
-                    删除
-                  </Button>
-                </div>
-              </div>
-            ))}
-          {!modsLoading && mods.length === 0 && <p className="text-sm text-muted-foreground">暂无模组</p>}
         </CardContent>
       </Card>
 

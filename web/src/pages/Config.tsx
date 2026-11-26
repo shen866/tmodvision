@@ -1,142 +1,145 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select, SelectOption } from '@/components/ui/select';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { useServerStatus } from '@/components/ServerStatus';
 
+const groups = [
+  {
+    title: '联机设置',
+    fields: [
+      ['maxplayers', '人数上限', 'number'],
+      ['password', '加入密码', 'password'],
+      ['motd', '欢迎消息', 'text'],
+      ['language', '服务器语言', 'text'],
+    ],
+  },
+  {
+    title: '高级配置',
+    fields: [
+      ['secure', 'Secure', 'switch'],
+      ['upnp', 'UPnP', 'switch'],
+      ['npcstream', 'NPC 同步频率', 'number'],
+    ],
+  },
+];
 export default function ConfigPage() {
-  const { serverId } = useParams<{ serverId: string }>();
-  const [config, setConfig] = useState<Record<string, string>>({});
-  const [configLoading, setConfigLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const id = useParams().serverId!;
+  const { refresh } = useServerStatus();
+  const [initial, setInitial] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [worlds, setWorlds] = useState<string[]>([]);
+  const [world, setWorld] = useState('');
+  const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-
-  const serverApi = serverId ? api.forServer(serverId) : null;
-
-  const fetchConfig = async () => {
-    if (!serverApi) return;
-    setConfigLoading(true);
-    try {
-      const data = await serverApi.get('/config');
-      setConfig(data);
-    } finally {
-      setConfigLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchConfig();
-  }, [serverId]);
-
-  const update = (key: string, value: string) => {
-    setConfig((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const save = async () => {
-    if (!serverApi) return;
-    setSaving(true);
-    setMessage('');
+    Promise.all([api.forServer(id).get('/config'), api.forServer(id).get('/worlds')])
+      .then(([config, list]) => {
+        setInitial(config);
+        setValues(config);
+        setWorld(config.worldname || '');
+        setWorlds(list.map((w: { name: string }) => w.name));
+        setReady(true);
+      })
+      .catch((e) => setMessage(e.message));
+  }, [id]);
+  const changed = Object.keys(values).filter((k) => values[k] !== initial[k]);
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
     try {
-      await serverApi.post('/config', config);
-      setMessage('配置已保存，重启服务器后生效');
-    } catch (err: any) {
-      setMessage(err.message || '保存失败');
+      const patch = Object.fromEntries(changed.map((k) => [k, values[k]]));
+      if (world !== (initial.worldname || ''))
+        Object.assign(patch, {
+          worldname: world,
+          world: '/data/tModLoader/Worlds/' + world + '.wld',
+          worldpath: '/data/tModLoader/Worlds/',
+        });
+      await api.forServer(id).post('/config', patch);
+      setInitial({ ...values, ...patch });
+      setValues({ ...values, ...patch });
+      refresh();
+      setMessage('已保存，修改将在下次启动时应用。');
+    } catch (e) {
+      setMessage((e as Error).message);
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
-
-  if (!serverApi) {
-    return <div className="p-10 text-center">缺少服务器标识</div>;
-  }
-
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">服务器配置</h1>
-      {message && <p className="text-sm text-primary">{message}</p>}
-      <Card>
-        <CardHeader>
-          <CardTitle>serverconfig.txt</CardTitle>
-          <CardDescription>修改常用配置项，保存后重启服务器生效</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {configLoading ? (
-            <p className="text-sm text-muted-foreground">加载中...</p>
-          ) : (
-            <>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="text-sm font-medium">世界文件</label>
-                  <Input value={config.world || ''} onChange={(e) => update('world', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">世界名称</label>
-                  <Input value={config.worldname || ''} onChange={(e) => update('worldname', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">自动创建大小</label>
-                  <Select value={config.autocreate || '2'} onChange={(e) => update('autocreate', e.target.value)}>
-                    <SelectOption value="1">小</SelectOption>
-                    <SelectOption value="2">中</SelectOption>
-                    <SelectOption value="3">大</SelectOption>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">难度</label>
-                  <Select value={config.difficulty || '0'} onChange={(e) => update('difficulty', e.target.value)}>
-                    <SelectOption value="0">经典</SelectOption>
-                    <SelectOption value="1">专家</SelectOption>
-                    <SelectOption value="2">大师</SelectOption>
-                    <SelectOption value="3">旅途</SelectOption>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">最大玩家数</label>
-                  <Input type="number" value={config.maxplayers || ''} onChange={(e) => update('maxplayers', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">端口</label>
-                  <Input type="number" value={config.port || ''} onChange={(e) => update('port', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">密码</label>
-                  <Input value={config.password || ''} onChange={(e) => update('password', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">欢迎消息 (MOTD)</label>
-                  <Input value={config.motd || ''} onChange={(e) => update('motd', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">语言</label>
-                  <Input value={config.language || ''} onChange={(e) => update('language', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Secure</label>
-                  <Select value={config.secure || '0'} onChange={(e) => update('secure', e.target.value)}>
-                    <SelectOption value="0">关闭</SelectOption>
-                    <SelectOption value="1">开启</SelectOption>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">种子</label>
-                  <Input value={config.seed || ''} onChange={(e) => update('seed', e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">NPC Stream</label>
-                  <Input type="number" value={config.npcstream || ''} onChange={(e) => update('npcstream', e.target.value)} />
-                </div>
+    <form className="space-y-5" onSubmit={save}>
+      <h1>服务器配置</h1>
+      {message && (
+        <p role="status" className="rounded-lg border p-3 text-sm">
+          {message}
+        </p>
+      )}
+      {ready && (
+        <>
+          <section className="rounded-xl border p-5">
+            <h2>启动世界</h2>
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <select
+                aria-label="启动世界"
+                className="rounded border p-2"
+                value={world}
+                onChange={(e) => setWorld(e.target.value)}
+              >
+                {[...new Set([initial.worldname || '', ...worlds])].map((w) => (
+                  <option key={w} value={w}>
+                    {w || '默认世界'}
+                  </option>
+                ))}
+              </select>
+              <Link className="text-sm text-primary" to={'/server/' + id + '/worlds'}>
+                创建世界或设置新地图参数 →
+              </Link>
+            </div>
+          </section>
+          {groups.map((group) => (
+            <section key={group.title} className="rounded-xl border p-5">
+              <h2>{group.title}</h2>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {group.fields.map(([key, label, type]) => (
+                  <label key={key} className="space-y-1 text-sm">
+                    <span>
+                      {label} <small className="text-muted-foreground">{key}</small>
+                    </span>
+                    {type === 'switch' ? (
+                      <select
+                        className="block w-full rounded-md border p-2"
+                        value={values[key] || '0'}
+                        onChange={(e) => setValues({ ...values, [key]: e.target.value })}
+                      >
+                        <option value="0">关闭</option>
+                        <option value="1">开启</option>
+                      </select>
+                    ) : (
+                      <Input
+                        type={type}
+                        min={key === 'maxplayers' ? 1 : 0}
+                        max={key === 'maxplayers' ? 255 : undefined}
+                        value={values[key] || ''}
+                        onChange={(e) => setValues({ ...values, [key]: e.target.value })}
+                      />
+                    )}
+                  </label>
+                ))}
               </div>
-              <div className="mt-4">
-                <Button onClick={save} disabled={saving} loading={saving}>
-                  保存配置
-                </Button>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+              {group.title === '联机设置' && (
+                <Link className="mt-4 block text-sm text-primary" to={'/server/' + id}>
+                  在启动计划中修改对外端口 →
+                </Link>
+              )}
+            </section>
+          ))}
+          <Button loading={busy} disabled={!changed.length && world === (initial.worldname || '')}>
+            保存配置
+          </Button>
+        </>
+      )}
+    </form>
   );
 }

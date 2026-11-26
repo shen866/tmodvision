@@ -4,18 +4,21 @@ import { DATA_DIR, HOST_DATA_DIR } from '../config';
 import {
   ServerConfig,
   loadServers,
-  invalidateServersCache,
+  saveServers,
+  editRegistry,
+  checkPort,
   getServerPaths,
-  SERVERS_JSON_PATH,
 } from '../servers';
-import { createWorld, getContainer, docker, createAndStartServerContainer } from './docker';
+import { defaultVersion, checkVersion, resolveTmodloaderTemplate } from './releases';
+import { getContainer, checkPublishedPort, docker, createAndStartServerContainer } from './docker';
 import { writeServerConfigAt } from './files';
-import { resolveSubPath, assertWithinBase } from '../lib/safe';
+import { resolveSubPath, assertWithinBase, assertSafeName } from '../lib/safe';
 
 export interface CreateServerInput {
   id: string;
   name: string;
   port: number;
+  version?: string;
   dataDir?: string;
   composeDir?: string;
   copyModsFrom?: string;
@@ -32,6 +35,10 @@ function sanitizeId(id: string): string {
 }
 
 export async function createServer(input: CreateServerInput): Promise<ServerConfig> {
+  return editRegistry(() => registerServer(input));
+}
+
+async function registerServer(input: CreateServerInput) {
   const id = sanitizeId(input.id);
   if (!id) throw new Error('Server id is required');
 
@@ -40,9 +47,29 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
     throw new Error(`Server '${id}' already exists`);
   }
 
+  checkPort(servers, id, input.port);
+  await checkPublishedPort(input.port, '');
+  if (input.world) assertSafeName(input.world.name);
   // Resolve dataDir/composeDir safely — only relative paths inside DATA_DIR.
   const dataDir = resolveSubPath(DATA_DIR, input.dataDir, `./tModLoader-${id}`);
   const composeDir = resolveSubPath(DATA_DIR, input.composeDir, `./servers/${id}`);
+  const dirs = [
+    dataDir,
+    composeDir,
+    path.resolve(DATA_DIR, 'steamMods'),
+    ...servers.flatMap((s) => [s.dataDir, s.composeDir]).filter((d) => d !== DATA_DIR),
+  ];
+  for (const [i, dir] of [dataDir, composeDir].entries()) {
+    if (
+      dir === path.resolve(DATA_DIR) ||
+      dirs.some(
+        (other, j) =>
+          j !== i && (dir === other || dir.startsWith(other + '/') || other.startsWith(dir + '/'))
+      )
+    ) {
+      throw new Error('数据目录与 Compose 目录必须独立');
+    }
+  }
   const containerName = `tmodloader-${id}`;
 
   const server: ServerConfig = {
@@ -51,7 +78,8 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
     containerName,
     composeDir,
     dataDir,
-    port: Number(input.port) || 7777,
+    port: input.port,
+    version: checkVersion(input.version ?? defaultVersion),
   };
 
   // Build everything on disk BEFORE registering, so a failure leaves no
@@ -74,10 +102,10 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
 
   // Generate serverconfig.txt
   const worldName = input.world?.name || `${id}-world`;
-  const worldPath = path.join(paths.worldsDir, `${worldName}.wld`);
+  const worldPath = path.posix.join('/data/tModLoader/Worlds', `${worldName}.wld`);
   await writeServerConfigAt(paths, {
     world: worldPath,
-    worldpath: paths.worldsDir + '/',
+    worldpath: '/data/tModLoader/Worlds/',
     worldname: worldName,
     autocreate: String(input.world?.size ?? 2),
     seed: input.world?.seed || '',
@@ -103,29 +131,13 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
   }
 
   // Register the server now that the filesystem is ready.
-  servers.push(server);
-  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(servers, null, 2));
-  invalidateServersCache();
+  await saveServers([...servers, server]);
 
   // Create and start the container in the background — building the image can
   // take several minutes so don't block the HTTP response.
   createAndStartServerContainer(id).catch((err) => {
     console.error(`Container start failed for ${id}:`, err);
   });
-
-  // Create world in the background — it can take minutes and should not
-  // block the HTTP response. Errors are logged, not thrown.
-  if (input.world?.name) {
-    createWorld(
-      id,
-      input.world.name,
-      Number(input.world.size) || 2,
-      Number(input.world.difficulty) || 0,
-      input.world.seed
-    ).catch((err) => {
-      console.error(`Background world creation failed for ${id}:`, err);
-    });
-  }
 
   return server;
 }
@@ -136,19 +148,31 @@ export async function createServer(input: CreateServerInput): Promise<ServerConf
  * its servers.json entry. Nothing per-server is left behind.
  */
 export async function deleteServer(serverId: string): Promise<void> {
+  return editRegistry(() => removeServer(serverId));
+}
+
+async function removeServer(serverId: string) {
   const servers = await loadServers();
   const server = servers.find((s) => s.id === serverId);
   if (!server) throw new Error(`Server '${serverId}' not found`);
 
-  // Stop and remove the server container.
-  try {
-    const container = await getContainer(serverId);
-    if (container) {
-      try { await container.stop({ t: 10 }); } catch { /* ignore */ }
-      try { await container.remove({ force: true }); } catch { /* ignore */ }
+  for (const dir of [server.dataDir, server.composeDir]) {
+    assertWithinBase(dir, DATA_DIR);
+    if (
+      path.resolve(dir) === path.resolve(DATA_DIR) ||
+      servers.some(
+        (other) =>
+          other.id !== serverId &&
+          [other.dataDir, other.composeDir].some((d) => d === dir || d.startsWith(dir + '/'))
+      )
+    ) {
+      throw new Error('此目录包含共享数据，无法整服删除');
     }
-  } catch {
-    // Container lookup failed — continue with the rest of the cleanup.
+  }
+  const container = await getContainer(serverId);
+  if (container) {
+    if ((await container.inspect()).State.Running) await container.stop({ t: 30 });
+    await container.remove();
   }
 
   // Also remove any leftover world-creation containers for this server.
@@ -158,8 +182,16 @@ export async function deleteServer(serverId: string): Promise<void> {
     for (const c of containers) {
       if (!c.Names.some((n) => n.replace(/^\//, '').startsWith(prefix))) continue;
       const container = docker.getContainer(c.Id);
-      try { await container.stop({ t: 5 }); } catch { /* ignore */ }
-      try { await container.remove({ force: true }); } catch { /* ignore */ }
+      try {
+        await container.stop({ t: 5 });
+      } catch {
+        /* ignore */
+      }
+      try {
+        await container.remove({ force: true });
+      } catch {
+        /* ignore */
+      }
     }
   } catch {
     // ignore
@@ -174,8 +206,7 @@ export async function deleteServer(serverId: string): Promise<void> {
 
   // Unregister from servers.json.
   const remaining = servers.filter((s) => s.id !== serverId);
-  await fs.writeFile(SERVERS_JSON_PATH, JSON.stringify(remaining, null, 2));
-  invalidateServersCache();
+  await saveServers(remaining);
 }
 
 async function copyModsPreset(fromServerId: string, toServer: ServerConfig) {
@@ -184,41 +215,16 @@ async function copyModsPreset(fromServerId: string, toServer: ServerConfig) {
   const fromPaths = getServerPaths(fromServer);
   const toPaths = getServerPaths(toServer);
 
-  // Copy Mods directory
   try {
-    const entries = await fs.readdir(fromPaths.modsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const src = path.join(fromPaths.modsDir, entry.name);
-      const dest = path.join(toPaths.modsDir, entry.name);
-      if (entry.isDirectory()) {
-        await fs.cp(src, dest, { recursive: true });
-      } else {
-        await fs.copyFile(src, dest);
-      }
-    }
-  } catch {
-    // ignore if source mods dir missing
+    await fs.cp(fromPaths.modsDir, toPaths.modsDir, { recursive: true });
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
   }
-
-  // Copy enabled.json
   try {
-    await fs.copyFile(fromPaths.enabledModsPath, toPaths.enabledModsPath);
-  } catch {
-    // ignore if source enabled.json missing
+    await fs.copyFile(fromPaths.workshopMapPath, toPaths.workshopMapPath);
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
   }
-}
-
-async function resolveTmodloaderTemplate(): Promise<string> {
-  const candidates = ['/app/tmodloader-template', path.resolve(process.cwd(), '../tmodloader')];
-  for (const dir of candidates) {
-    try {
-      await fs.access(dir);
-      return dir;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error('tmodloader template directory not found');
 }
 
 function toHostPath(containerPath: string): string {
@@ -230,13 +236,14 @@ function toHostPath(containerPath: string): string {
   return containerPath;
 }
 
-function generateComposeFile(server: ServerConfig): string {
+export function generateComposeFile(server: ServerConfig): string {
   return `services:
   tmodloader:
+    platform: linux/amd64
     build:
       context: ./tmodloader
       args:
-        - TMOD_VERSION=\${TMOD_VERSION:-v2026.04.3.0}
+        - TMOD_VERSION=${server.version || defaultVersion}
     container_name: ${server.containerName}
     restart: unless-stopped
     stdin_open: true

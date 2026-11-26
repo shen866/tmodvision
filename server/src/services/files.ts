@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { modHeader } from './modHeader';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { listServers, getServerById, getServerPaths } from '../servers';
@@ -7,6 +8,8 @@ import { assertSafeName, assertWithinBase } from '../lib/safe';
 export interface ModInfo {
   name: string;
   enabled: boolean;
+  version?: string;
+  loader?: string;
   size: number;
   mtime: Date;
 }
@@ -37,15 +40,16 @@ export async function readEnabledMods(serverId: string): Promise<string[]> {
   try {
     const raw = await fs.readFile(paths.enabledModsPath, 'utf-8');
     return JSON.parse(raw) as string[];
-  } catch {
-    await fs.writeFile(paths.enabledModsPath, '[]');
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
     return [];
   }
 }
 
 export async function writeEnabledMods(serverId: string, mods: string[]) {
   const paths = getServerPaths(await resolveServer(serverId));
-  await fs.writeFile(paths.enabledModsPath, JSON.stringify(mods, null, 2));
+  await fs.writeFile(paths.enabledModsPath + '.tmp', JSON.stringify(mods, null, 2));
+  await fs.rename(paths.enabledModsPath + '.tmp', paths.enabledModsPath);
 }
 
 export async function listInstalledMods(serverId: string): Promise<ModInfo[]> {
@@ -59,8 +63,9 @@ export async function listInstalledMods(serverId: string): Promise<ModInfo[]> {
       if (!f.isFile() || !f.name.endsWith('.tmod')) continue;
       const stat = await fs.stat(path.join(paths.modsDir, f.name));
       const name = f.name.slice(0, -5);
+      const header = await modHeader(path.join(paths.modsDir, f.name));
       entries.push({
-        name,
+        name, version: header?.version, loader: header?.loader,
         enabled: enabled.has(name),
         size: stat.size,
         mtime: stat.mtime,
@@ -215,7 +220,8 @@ export async function writeServerConfigAt(
       lines.push(`${key}=${value}`);
     }
   }
-  await fs.writeFile(paths.serverConfigPath, lines.join('\n') + '\n');
+  await fs.writeFile(paths.serverConfigPath + '.tmp', lines.join('\n') + '\n');
+  await fs.rename(paths.serverConfigPath + '.tmp', paths.serverConfigPath);
 }
 
 export async function setActiveWorld(serverId: string, name: string) {
@@ -223,8 +229,8 @@ export async function setActiveWorld(serverId: string, name: string) {
   const server = await resolveServer(serverId);
   const paths = getServerPaths(server);
   const config = await readServerConfig(serverId);
-  config.world = path.join(paths.worldsDir, `${name}.wld`);
-  config.worldpath = paths.worldsDir + '/';
+  config.world = path.posix.join('/data/tModLoader/Worlds', `${name}.wld`);
+  config.worldpath = '/data/tModLoader/Worlds/';
   config.worldname = name;
   await writeServerConfig(serverId, config);
 }
